@@ -210,16 +210,16 @@ F6_hit_rate_bounded = relation(
 
 
 # =============================================================================
-# GROUP B: LRU STACK PROPERTIES (4)
+# GROUP B: CACHE SIZE & ASSOCIATIVITY PROPERTIES (4)
 # =============================================================================
-# (Existing R3 and R4 are conceptually in this group.)
 
-# --- R3 (existing): Larger cache implies higher hit rate ---
+# --- R3: Larger cache implies higher hit rate ---
 #
 #   Size[LLC_a] >= Size[LLC_b] => HitRate[LLC_a] >= HitRate[LLC_b] + ε_3
 
 llc_a = entity("LLC_a", kind="cache")
 llc_b = entity("LLC_b", kind="cache")
+p_r3 = entity("P", kind="policy")
 e3 = eps("3")
 
 R3_larger_cache_higher_hr = relation(
@@ -230,15 +230,15 @@ R3_larger_cache_higher_hr = relation(
     consequent=constraint(
         metric(M.HIT_RATE, llc_a), CmpOp.GE, add(metric(M.HIT_RATE, llc_b), e3)
     ),
-    entities=[llc_a, llc_b, p_lru],
-    bindings=[(llc_a, p_lru), (llc_b, p_lru)],
+    entities=[llc_a, llc_b, p_r3],
+    bindings=[(llc_a, p_r3), (llc_b, p_r3)],
     free_epsilons=[e3],
-    source="inclusion property (exact for LRU)",
-    domain="LRU or stack-based policies; same workload and assoc",
+    source="inclusion property (exact for stack algorithms)",
+    domain="any policy; same workload and assoc",
 )
 
 
-# --- R4 (existing): Diminishing returns of associativity ---
+# --- R4: Diminishing returns of associativity ---
 #
 #   Assoc[a] = A/2 ∧ Assoc[b] = A ∧ Assoc[c] = 2A ∧ Size equal
 #     => (HR[c] - HR[b]) <= (HR[b] - HR[a]) + ε_12
@@ -246,6 +246,7 @@ R3_larger_cache_higher_hr = relation(
 llc_a_r4 = entity("LLC_a", kind="cache")
 llc_b_r4 = entity("LLC_b", kind="cache")
 llc_c_r4 = entity("LLC_c", kind="cache")
+p_r4 = entity("P", kind="policy")
 e12 = eps("12")
 
 R4_diminishing_assoc_returns = relation(
@@ -271,11 +272,11 @@ R4_diminishing_assoc_returns = relation(
         CmpOp.LE,
         add(sub(metric(M.HIT_RATE, llc_b_r4), metric(M.HIT_RATE, llc_a_r4)), e12)
     ),
-    entities=[llc_a_r4, llc_b_r4, llc_c_r4, p_lru],
-    bindings=[(llc_a_r4, p_lru), (llc_b_r4, p_lru), (llc_c_r4, p_lru)],
+    entities=[llc_a_r4, llc_b_r4, llc_c_r4, p_r4],
+    bindings=[(llc_a_r4, p_r4), (llc_b_r4, p_r4), (llc_c_r4, p_r4)],
     free_epsilons=[e12],
     source="diminishing returns / concavity of miss-rate curve",
-    domain="fixed size, LRU-family, single workload",
+    domain="any policy, fixed size, single workload",
 )
 
 
@@ -288,10 +289,11 @@ R4_diminishing_assoc_returns = relation(
 
 C_r6 = entity("C", kind="cache")
 W_r6 = entity("W", kind="workload")
+p_r6 = entity("P", kind="policy")
 e6 = eps("6")
 
-R6_lru_working_set_fits_means_all_hits = relation(
-    name="lru_working_set_fits_means_all_hits",
+R6_working_set_fits_means_all_hits = relation(
+    name="working_set_fits_means_all_hits",
     premises=[
         constraint(
             metric(M.WORKING_SET_SIZE, W_r6),
@@ -304,11 +306,11 @@ R6_lru_working_set_fits_means_all_hits = relation(
         CmpOp.GE,
         sub(lit(1.0), e6)
     ),
-    entities=[C_r6, W_r6, p_lru],
-    bindings=[(C_r6, p_lru)],
+    entities=[C_r6, W_r6, p_r6],
+    bindings=[(C_r6, p_r6)],
     free_epsilons=[e6],
-    source="Denning's working set model; Mattson stack distance",
-    domain="LRU, fully-associative or high-assoc, after warmup",
+    source="Denning's working set model",
+    domain="any demand-fetch policy, fully-associative or high-assoc, after warmup",
 )
 
 
@@ -325,10 +327,11 @@ C_wa = entity("C_wa", kind="cache")
 C_wb = entity("C_wb", kind="cache")
 W_a_r7 = entity("W_a", kind="workload")
 W_b_r7 = entity("W_b", kind="workload")
+p_r7 = entity("P", kind="policy")
 e7 = eps("7")
 
-R7_lru_miss_rate_monotone_in_reuse_distance = relation(
-    name="lru_miss_rate_monotone_in_reuse_distance",
+R7_miss_rate_monotone_in_reuse_distance = relation(
+    name="miss_rate_monotone_in_reuse_distance",
     premises=[
         conj(
             constraint(metric(M.REUSE_DISTANCE, W_a_r7), CmpOp.LE,
@@ -343,11 +346,11 @@ R7_lru_miss_rate_monotone_in_reuse_distance = relation(
         CmpOp.LE,
         add(metric(M.MISS_RATE, C_wb), e7)
     ),
-    entities=[C_wa, C_wb, W_a_r7, W_b_r7, p_lru],
-    bindings=[(C_wa, p_lru), (C_wb, p_lru)],
+    entities=[C_wa, C_wb, W_a_r7, W_b_r7, p_r7],
+    bindings=[(C_wa, p_r7), (C_wb, p_r7)],
     free_epsilons=[e7],
-    source="consequence of LRU stack property",
-    domain="LRU, same cache geometry",
+    source="lower reuse distance = easier locality for any policy",
+    domain="any policy, same cache geometry",
 )
 
 
@@ -423,63 +426,67 @@ R9_opt_upper_bounds_all_policies = relation(
 )
 
 
-# --- R10: LRU beats FIFO under strong temporal locality ---
+# --- R10: Recency-aware beats recency-blind under temporal locality ---
 #
-#   ReuseDistance[W] <= Size[C] / (2 * 64) ∧ LRU vs FIFO
-#     => HitRate[C_lru] >= HitRate[C_fifo] + ε
+#   ReuseDistance[W] <= Size[C] / (2 * 64) ∧ same geometry
+#     => HitRate[C_recency_aware] >= HitRate[C_recency_blind] + ε
 #
-# When reuse distances are well within cache capacity, LRU's recency
-# tracking gives it an edge over FIFO's blind rotation.
+# When reuse distances are well within cache capacity, policies that
+# track/exploit recency outperform those that don't.
 
-C_lru_r10 = entity("C_lru", kind="cache")
-C_fifo_r10 = entity("C_fifo", kind="cache")
+C_aware_r10 = entity("C_recency_aware", kind="cache")
+C_blind_r10 = entity("C_recency_blind", kind="cache")
 W_r10 = entity("W", kind="workload")
+p_aware = entity("P_recency_aware", kind="policy")
+p_blind = entity("P_recency_blind", kind="policy")
 e10 = eps("10")
 
-R10_lru_beats_fifo_temporal_locality = relation(
-    name="lru_beats_fifo_temporal_locality",
+R10_recency_aware_beats_blind = relation(
+    name="recency_aware_beats_blind_temporal_locality",
     premises=[
         conj(
             constraint(
                 metric(M.REUSE_DISTANCE, W_r10),
                 CmpOp.LE,
-                div(metric(M.SIZE, C_lru_r10), mul(lit(2), BLOCK_SIZE))
+                div(metric(M.SIZE, C_aware_r10), mul(lit(2), BLOCK_SIZE))
             ),
-            constraint(metric(M.SIZE, C_lru_r10), CmpOp.EQ, metric(M.SIZE, C_fifo_r10)),
-            constraint(metric(M.ASSOCIATIVITY, C_lru_r10), CmpOp.EQ,
-                       metric(M.ASSOCIATIVITY, C_fifo_r10)),
+            constraint(metric(M.SIZE, C_aware_r10), CmpOp.EQ,
+                       metric(M.SIZE, C_blind_r10)),
+            constraint(metric(M.ASSOCIATIVITY, C_aware_r10), CmpOp.EQ,
+                       metric(M.ASSOCIATIVITY, C_blind_r10)),
         )
     ],
     consequent=constraint(
-        metric(M.HIT_RATE, C_lru_r10),
+        metric(M.HIT_RATE, C_aware_r10),
         CmpOp.GE,
-        add(metric(M.HIT_RATE, C_fifo_r10), e10)
+        add(metric(M.HIT_RATE, C_blind_r10), e10)
     ),
-    entities=[C_lru_r10, C_fifo_r10, W_r10, p_lru, p_fifo],
-    bindings=[(C_lru_r10, p_lru), (C_fifo_r10, p_fifo)],
+    entities=[C_aware_r10, C_blind_r10, W_r10, p_aware, p_blind],
+    bindings=[(C_aware_r10, p_aware), (C_blind_r10, p_blind)],
     free_epsilons=[e10],
-    source="folklore; LRU exploits recency, FIFO does not",
-    domain="same cache geometry, workloads with strong temporal locality",
+    source="recency-exploiting policies dominate when temporal locality is strong",
+    domain="same geometry, strong temporal locality workloads",
 )
 
 
-# --- R11: Random replacement lower bound relative to LRU ---
+# --- R11: Random replacement lower bound relative to any policy ---
 #
-#   HitRate[C_rand] >= (1 - 1/Assoc) * HitRate[C_lru] - ε
+#   HitRate[C_rand] >= (1 - 1/Assoc) * HitRate[C_P] - ε
 #
 # Random replacement retains useful blocks with probability (ways-1)/ways
-# per eviction, giving a probabilistic lower bound.
+# per eviction, giving a probabilistic lower bound relative to any reference.
 
-C_lru_r11 = entity("C_lru", kind="cache")
+C_ref_r11 = entity("C_ref", kind="cache")
 C_rand_r11 = entity("C_rand", kind="cache")
+p_ref_r11 = entity("P_ref", kind="policy")
 e11 = eps("11")
 
 R11_random_replacement_lower_bound = relation(
     name="random_replacement_lower_bound",
     premises=[
         conj(
-            constraint(metric(M.SIZE, C_lru_r11), CmpOp.EQ, metric(M.SIZE, C_rand_r11)),
-            constraint(metric(M.ASSOCIATIVITY, C_lru_r11), CmpOp.EQ,
+            constraint(metric(M.SIZE, C_ref_r11), CmpOp.EQ, metric(M.SIZE, C_rand_r11)),
+            constraint(metric(M.ASSOCIATIVITY, C_ref_r11), CmpOp.EQ,
                        metric(M.ASSOCIATIVITY, C_rand_r11)),
         )
     ],
@@ -488,17 +495,17 @@ R11_random_replacement_lower_bound = relation(
         CmpOp.GE,
         sub(
             mul(
-                sub(lit(1), div(lit(1), metric(M.ASSOCIATIVITY, C_lru_r11))),
-                metric(M.HIT_RATE, C_lru_r11)
+                sub(lit(1), div(lit(1), metric(M.ASSOCIATIVITY, C_ref_r11))),
+                metric(M.HIT_RATE, C_ref_r11)
             ),
             e11
         )
     ),
-    entities=[C_lru_r11, C_rand_r11, p_lru, p_random],
-    bindings=[(C_lru_r11, p_lru), (C_rand_r11, p_random)],
+    entities=[C_ref_r11, C_rand_r11, p_ref_r11, p_random],
+    bindings=[(C_ref_r11, p_ref_r11), (C_rand_r11, p_random)],
     free_epsilons=[e11],
     source="Al-Zoubi et al.; probabilistic argument",
-    domain="same cache geometry, same workload",
+    domain="same cache geometry, same workload, any reference policy",
 )
 
 
@@ -543,82 +550,88 @@ R12_adaptive_tracks_best_component = relation(
 )
 
 
-# --- R13: PLRU approximates LRU ---
+# --- R13: Hardware approximation tracks ideal policy ---
 #
-#   HitRate[C_plru] >= HitRate[C_lru] - ε
+#   HitRate[C_approx] >= HitRate[C_ideal] - ε
 #
-# Tree-based pseudo-LRU is a cheap approximation of true LRU.
-# The gap is typically small (< 2% hit rate) but grows with associativity.
+# Any hardware-feasible approximation of an ideal policy stays within
+# epsilon of it. Applies to PLRU/LRU, quantized-Mockingjay/full, etc.
 
-C_lru_r13 = entity("C_lru", kind="cache")
-C_plru_r13 = entity("C_plru", kind="cache")
+C_ideal_r13 = entity("C_ideal", kind="cache")
+C_approx_r13 = entity("C_approx", kind="cache")
+p_ideal = entity("P_ideal", kind="policy")
+p_approx = entity("P_approx", kind="policy")
 e13 = eps("13")
 
-R13_plru_approximates_lru = relation(
-    name="plru_approximates_lru",
+R13_approximation_tracks_ideal = relation(
+    name="hw_approximation_tracks_ideal",
     premises=[
         conj(
-            constraint(metric(M.SIZE, C_lru_r13), CmpOp.EQ, metric(M.SIZE, C_plru_r13)),
-            constraint(metric(M.ASSOCIATIVITY, C_lru_r13), CmpOp.EQ,
-                       metric(M.ASSOCIATIVITY, C_plru_r13)),
+            constraint(metric(M.SIZE, C_ideal_r13), CmpOp.EQ,
+                       metric(M.SIZE, C_approx_r13)),
+            constraint(metric(M.ASSOCIATIVITY, C_ideal_r13), CmpOp.EQ,
+                       metric(M.ASSOCIATIVITY, C_approx_r13)),
         )
     ],
     consequent=constraint(
-        metric(M.HIT_RATE, C_plru_r13),
+        metric(M.HIT_RATE, C_approx_r13),
         CmpOp.GE,
-        sub(metric(M.HIT_RATE, C_lru_r13), e13)
+        sub(metric(M.HIT_RATE, C_ideal_r13), e13)
     ),
-    entities=[C_lru_r13, C_plru_r13, p_lru, p_plru],
-    bindings=[(C_lru_r13, p_lru), (C_plru_r13, p_plru)],
+    entities=[C_ideal_r13, C_approx_r13, p_ideal, p_approx],
+    bindings=[(C_ideal_r13, p_ideal), (C_approx_r13, p_approx)],
     free_epsilons=[e13],
-    source="Al-Zoubi et al. 2004; empirical comparison",
-    domain="same cache geometry, same workload",
+    source="general; e.g. Al-Zoubi et al. 2004 (PLRU/LRU)",
+    domain="same geometry, same workload, P_approx is a hw-feasible version of P_ideal",
 )
 
 
-# --- R14: PLRU-LRU gap grows with associativity ---
+# --- R14: Approximation gap grows with decision space ---
 #
 #   Assoc[high] > Assoc[low] ∧ same size
-#     => (HR_lru - HR_plru)[high] >= (HR_lru - HR_plru)[low] - ε
+#     => (HR_ideal - HR_approx)[high] >= (HR_ideal - HR_approx)[low] - ε
 #
-# PLRU's tree structure becomes a worse approximation of the full LRU
-# ordering at higher associativity.
+# More candidates to rank makes approximation harder. The gap between
+# an ideal policy and its hardware approximation widens with associativity.
 
-C_lru_hi = entity("C_lru_hiassoc", kind="cache")
-C_plru_hi = entity("C_plru_hiassoc", kind="cache")
-C_lru_lo = entity("C_lru_loassoc", kind="cache")
-C_plru_lo = entity("C_plru_loassoc", kind="cache")
+C_ideal_hi = entity("C_ideal_hiassoc", kind="cache")
+C_approx_hi = entity("C_approx_hiassoc", kind="cache")
+C_ideal_lo = entity("C_ideal_loassoc", kind="cache")
+C_approx_lo = entity("C_approx_loassoc", kind="cache")
+p_ideal_r14 = entity("P_ideal", kind="policy")
+p_approx_r14 = entity("P_approx", kind="policy")
 e14 = eps("14")
 
-R14_plru_gap_grows_with_associativity = relation(
-    name="plru_gap_grows_with_associativity",
+R14_approximation_gap_grows_with_associativity = relation(
+    name="approximation_gap_grows_with_associativity",
     premises=[
         conj(
-            constraint(metric(M.ASSOCIATIVITY, C_lru_hi), CmpOp.GT,
-                       metric(M.ASSOCIATIVITY, C_lru_lo)),
-            constraint(metric(M.SIZE, C_lru_hi), CmpOp.EQ, metric(M.SIZE, C_lru_lo)),
-            constraint(metric(M.SIZE, C_lru_hi), CmpOp.EQ, metric(M.SIZE, C_plru_hi)),
-            constraint(metric(M.SIZE, C_lru_lo), CmpOp.EQ, metric(M.SIZE, C_plru_lo)),
-            constraint(metric(M.ASSOCIATIVITY, C_lru_hi), CmpOp.EQ,
-                       metric(M.ASSOCIATIVITY, C_plru_hi)),
-            constraint(metric(M.ASSOCIATIVITY, C_lru_lo), CmpOp.EQ,
-                       metric(M.ASSOCIATIVITY, C_plru_lo)),
+            constraint(metric(M.ASSOCIATIVITY, C_ideal_hi), CmpOp.GT,
+                       metric(M.ASSOCIATIVITY, C_ideal_lo)),
+            constraint(metric(M.SIZE, C_ideal_hi), CmpOp.EQ, metric(M.SIZE, C_ideal_lo)),
+            constraint(metric(M.SIZE, C_ideal_hi), CmpOp.EQ, metric(M.SIZE, C_approx_hi)),
+            constraint(metric(M.SIZE, C_ideal_lo), CmpOp.EQ, metric(M.SIZE, C_approx_lo)),
+            constraint(metric(M.ASSOCIATIVITY, C_ideal_hi), CmpOp.EQ,
+                       metric(M.ASSOCIATIVITY, C_approx_hi)),
+            constraint(metric(M.ASSOCIATIVITY, C_ideal_lo), CmpOp.EQ,
+                       metric(M.ASSOCIATIVITY, C_approx_lo)),
         )
     ],
     consequent=constraint(
-        sub(metric(M.HIT_RATE, C_lru_hi), metric(M.HIT_RATE, C_plru_hi)),
+        sub(metric(M.HIT_RATE, C_ideal_hi), metric(M.HIT_RATE, C_approx_hi)),
         CmpOp.GE,
         sub(
-            sub(metric(M.HIT_RATE, C_lru_lo), metric(M.HIT_RATE, C_plru_lo)),
+            sub(metric(M.HIT_RATE, C_ideal_lo), metric(M.HIT_RATE, C_approx_lo)),
             e14
         )
     ),
-    entities=[C_lru_hi, C_plru_hi, C_lru_lo, C_plru_lo, p_lru, p_plru],
-    bindings=[(C_lru_hi, p_lru), (C_plru_hi, p_plru),
-              (C_lru_lo, p_lru), (C_plru_lo, p_plru)],
+    entities=[C_ideal_hi, C_approx_hi, C_ideal_lo, C_approx_lo,
+              p_ideal_r14, p_approx_r14],
+    bindings=[(C_ideal_hi, p_ideal_r14), (C_approx_hi, p_approx_r14),
+              (C_ideal_lo, p_ideal_r14), (C_approx_lo, p_approx_r14)],
     free_epsilons=[e14],
-    source="empirical; PLRU tree depth grows logarithmically with ways",
-    domain="same total size, same workload, associativity sweep",
+    source="larger decision space makes approximation harder",
+    domain="same total size, same workload, P_approx is hw-feasible version of P_ideal",
 )
 
 
@@ -664,11 +677,10 @@ R15_cliff_at_working_set_boundary = relation(
         CmpOp.GE,
         sub(mul(lit(2), metric(M.MISS_RATE, C_under)), e15)
     ),
-    entities=[C_over, C_under, W_over, W_under, p_lru],
-    bindings=[(C_over, p_lru), (C_under, p_lru)],
+    entities=[C_over, C_under, W_over, W_under],
     free_epsilons=[e15],
     source="capacity cliff / working set model (Denning)",
-    domain="LRU-family, looping or structured access patterns",
+    domain="any policy, looping or structured access patterns",
 )
 
 
@@ -729,11 +741,10 @@ R17_reuse_distance_predicts_high_miss_rate = relation(
         CmpOp.GE,
         sub(lit(0.5), e17)
     ),
-    entities=[C_r17, W_r17, p_lru],
-    bindings=[(C_r17, p_lru)],
+    entities=[C_r17, W_r17],
     free_epsilons=[e17],
-    source="Mattson et al. 1970; stack distance histogram",
-    domain="LRU, fully-associative",
+    source="Mattson et al. 1970; information-theoretic argument",
+    domain="any policy, fully-associative",
 )
 
 
@@ -907,55 +918,56 @@ R22_conflict_misses_decrease_with_associativity = relation(
         CmpOp.LE,
         add(metric(M.CONFLICT_MISSES, C_lo_r22), e22)
     ),
-    entities=[C_hi_r22, C_lo_r22, p_lru],
-    bindings=[(C_hi_r22, p_lru), (C_lo_r22, p_lru)],
+    entities=[C_hi_r22, C_lo_r22],
     free_epsilons=[e22],
     source="Hill & Smith 1989 (3C model)",
-    domain="same replacement policy, same workload",
+    domain="any policy (same for both), same workload",
 )
 
 
-# --- R23: Scan-resistant policy beats LRU on mixed workloads ---
+# --- R23: Scan-aware policy beats scan-naive on mixed workloads ---
 #
 #   Scanning component has high reuse distance ∧ recurrent component
-#   fits in cache ∧ adaptive vs LRU => HR[adaptive] >= HR[lru] + ε
+#   fits in cache ∧ scan-aware vs scan-naive => HR[aware] >= HR[naive] + ε
 #
-# LRU pollutes the cache with scan data; adaptive policies (ARC, LIRS,
-# RRIP) protect the recurrent working set.
+# Scan-naive policies pollute the cache with streaming data; scan-aware
+# policies (RRIP, ARC, LIRS, Mockingjay) protect the recurrent working set.
 
-C_lru_r23 = entity("C_lru", kind="cache")
-C_adapt_r23 = entity("C_adaptive", kind="cache")
+C_naive_r23 = entity("C_scan_naive", kind="cache")
+C_aware_r23 = entity("C_scan_aware", kind="cache")
 W_scan = entity("W_scan_component", kind="workload")
 W_recur = entity("W_recurrent", kind="workload")
+p_naive = entity("P_scan_naive", kind="policy")
+p_scan_aware = entity("P_scan_aware", kind="policy")
 e23 = eps("23")
 
-R23_scan_resistance_vs_lru = relation(
-    name="scan_resistance_vs_lru",
+R23_scan_resistance = relation(
+    name="scan_aware_beats_scan_naive",
     premises=[
         conj(
-            constraint(metric(M.SIZE, C_lru_r23), CmpOp.EQ,
-                       metric(M.SIZE, C_adapt_r23)),
-            constraint(metric(M.ASSOCIATIVITY, C_lru_r23), CmpOp.EQ,
-                       metric(M.ASSOCIATIVITY, C_adapt_r23)),
+            constraint(metric(M.SIZE, C_naive_r23), CmpOp.EQ,
+                       metric(M.SIZE, C_aware_r23)),
+            constraint(metric(M.ASSOCIATIVITY, C_naive_r23), CmpOp.EQ,
+                       metric(M.ASSOCIATIVITY, C_aware_r23)),
             constraint(
                 metric(M.REUSE_DISTANCE, W_scan),
                 CmpOp.GT,
-                div(metric(M.SIZE, C_lru_r23), BLOCK_SIZE)
+                div(metric(M.SIZE, C_naive_r23), BLOCK_SIZE)
             ),
             constraint(
                 metric(M.WORKING_SET_SIZE, W_recur),
                 CmpOp.LT,
-                div(metric(M.SIZE, C_lru_r23), BLOCK_SIZE)
+                div(metric(M.SIZE, C_naive_r23), BLOCK_SIZE)
             ),
         )
     ],
     consequent=constraint(
-        metric(M.HIT_RATE, C_adapt_r23),
+        metric(M.HIT_RATE, C_aware_r23),
         CmpOp.GE,
-        add(metric(M.HIT_RATE, C_lru_r23), e23)
+        add(metric(M.HIT_RATE, C_naive_r23), e23)
     ),
-    entities=[C_lru_r23, C_adapt_r23, W_scan, W_recur, p_lru, p_adaptive],
-    bindings=[(C_lru_r23, p_lru), (C_adapt_r23, p_adaptive)],
+    entities=[C_naive_r23, C_aware_r23, W_scan, W_recur, p_naive, p_scan_aware],
+    bindings=[(C_naive_r23, p_naive), (C_aware_r23, p_scan_aware)],
     free_epsilons=[e23],
     source="Megiddo & Modha 2003 (ARC); Jiang & Zhang 2002 (LIRS)",
     domain="mixed scan+recurrent workload",
@@ -1103,16 +1115,16 @@ ALL_RELATIONS = [
     # Group B: LRU Stack Properties
     R3_larger_cache_higher_hr,
     R4_diminishing_assoc_returns,
-    R6_lru_working_set_fits_means_all_hits,
-    R7_lru_miss_rate_monotone_in_reuse_distance,
+    R6_working_set_fits_means_all_hits,
+    R7_miss_rate_monotone_in_reuse_distance,
     R8_lru_set_decomposition,
     # Group C: Policy Comparison
     R9_opt_upper_bounds_all_policies,
-    R10_lru_beats_fifo_temporal_locality,
+    R10_recency_aware_beats_blind,
     R11_random_replacement_lower_bound,
     R12_adaptive_tracks_best_component,
-    R13_plru_approximates_lru,
-    R14_plru_gap_grows_with_associativity,
+    R13_approximation_tracks_ideal,
+    R14_approximation_gap_grows_with_associativity,
     # Group D: Working Set / Capacity
     R15_cliff_at_working_set_boundary,
     R16_capacity_misses_dominate_beyond_wss,
@@ -1124,7 +1136,7 @@ ALL_RELATIONS = [
     R21_random_avoids_deterministic_thrashing,
     # Group F: Associativity Effects
     R22_conflict_misses_decrease_with_associativity,
-    R23_scan_resistance_vs_lru,
+    R23_scan_resistance,
     # Group G: Belady's Anomaly / Non-Stack
     R24_beladys_anomaly_fifo,
     R25_non_stack_non_monotone_associativity,
