@@ -128,6 +128,10 @@ Entities carry a "kind" tag:
     - kind="cache" -> cache size, associativity, latency params
     - kind="policy" -> replacement policy class, policy-specific params
     - kind="workload" -> benchmark binary, input set, simpoint
+    - kind="interval" -> an observation window within a single execution
+      (not committed to any specific partitioning: could be phases,
+      SimPoints, fixed instruction windows, ROIs, sliding windows, etc.
+      The only requirement is "large enough for metric stability.")
 
 ================================================================================
 WHAT A RELATION CAPTURES
@@ -174,7 +178,7 @@ import json
 @dataclass(frozen=True)
 class Entity:
     name: str
-    kind: str  # "cache", "policy", "workload", "core", "memory"
+    kind: str  # "cache", "policy", "workload", "core", "memory", "interval"
 
     def __repr__(self):
         return f"{self.kind}:{self.name}"
@@ -200,6 +204,15 @@ class MetricKind(Enum):
     IPC = auto()                # instructions per cycle (whole-core metric)
     BANDWIDTH = auto()          # memory bandwidth consumed (bytes/cycle)
     EVICTIONS = auto()          # number of evictions over a trace window
+    REUSE_DISTANCE = auto()     # average reuse (stack) distance in blocks
+    WORKING_SET_SIZE = auto()   # distinct blocks accessed in an interval
+    UNIQUE_BLOCKS = auto()      # distinct blocks in a trace
+    CONFLICT_MISSES = auto()    # 3C model: misses due to set mapping collisions
+    CAPACITY_MISSES = auto()    # 3C model: misses due to working set > cache size
+    COMPULSORY_MISSES = auto()  # 3C model: cold-start misses (first access to a block)
+    MISS_COUNT = auto()         # absolute miss count (not a rate)
+    ACCESSES = auto()           # total number of cache accesses
+    STACK_DEPTH = auto()        # maximum stack depth used by the policy
 
     def __repr__(self):
         return self.name
@@ -418,10 +431,19 @@ class Relation:
         free_epsilons:  Tolerance terms whose values are unknown. In eval
                         mode these become measured slack; in Z3 mode they
                         become variables to solve for.
+        bindings:       Explicit pairings between entities, e.g.,
+                        ((cache_C, policy_LRU),) means "cache C uses LRU."
+                        Keeps the AST free of fake binding metrics while
+                        giving the experiment generator unambiguous
+                        cache-to-policy (or cache-to-workload) mappings.
         source:         Provenance — "folklore", "doi:10.1145/...", "hypothesis".
         domain:         Applicability conditions that aren't formal premises
                         but restrict when this relation is meaningful
                         (e.g., "LRU-family policies", "SPEC-like workloads").
+        expected_violable:  If True, this relation is stated specifically to
+                        find counterexamples. A negative epsilon (violation)
+                        is informative rather than surprising. Used for
+                        Belady's anomaly, non-stack non-monotonicity, etc.
 
     Experiment generation contract:
         Given a Relation, the experiment generator must produce a set of
@@ -440,8 +462,10 @@ class Relation:
     consequent: Constraint
     entities: tuple[Entity, ...] = field(default_factory=tuple)
     free_epsilons: tuple[Epsilon, ...] = field(default_factory=tuple)
+    bindings: tuple[tuple[Entity, Entity], ...] = field(default_factory=tuple)
     source: str = ""
     domain: str = ""
+    expected_violable: bool = False
 
     def __repr__(self):
         prems = " ∧ ".join(repr(p) for p in self.premises)
@@ -486,12 +510,18 @@ def relation(
     consequent: Constraint,
     entities: list[Entity] | None = None,
     free_epsilons: list[Epsilon] | None = None,
+    bindings: list[tuple[Entity, Entity]] | None = None,
     source: str = "",
     domain: str = "",
+    expected_violable: bool = False,
 ) -> Relation:
     ents = tuple(entities) if entities else ()
     epss = tuple(free_epsilons) if free_epsilons else ()
-    return Relation(name, tuple(premises), consequent, ents, epss, source, domain)
+    binds = tuple(bindings) if bindings else ()
+    return Relation(
+        name, tuple(premises), consequent, ents, epss, binds,
+        source, domain, expected_violable,
+    )
 
 
 # Arithmetic combinators for building Expr trees
