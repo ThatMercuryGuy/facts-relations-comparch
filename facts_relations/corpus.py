@@ -330,27 +330,6 @@ R7_hit_rate_between_load_store = relation(
     domain="any policy, any workload with both loads and stores",
 )
 
-# --- R8: Demand hit rate >= overall hit rate when prefetches pollute ---
-#
-#   DemandHitRate[C] >= HitRate[C] - ε
-
-C_r8 = entity("C", kind="cache")
-e8 = eps("8")
-
-R8_demand_hr_ge_overall = relation(
-    name="demand_hit_rate_ge_overall",
-    premises=[],
-    consequent=constraint(
-        metric(M.DEMAND_HIT_RATE, C_r8),
-        CmpOp.GE,
-        sub(metric(M.HIT_RATE, C_r8), e8)
-    ),
-    entities=[C_r8],
-    free_epsilons=[e8],
-    source="demand accesses don't include useless prefetch fills",
-    domain="any cache with prefetching enabled",
-)
-
 # --- R9: Prefetch coverage + demand miss rate relationship ---
 #
 #   Higher prefetch coverage => lower demand miss rate
@@ -547,7 +526,6 @@ ALL_RELATIONS = [
     R6_critical_hit_rate_implies_fewer_stalls,
     # Group F: Hit Rate Decomposition
     R7_hit_rate_between_load_store,
-    R8_demand_hr_ge_overall,
     R9_prefetch_coverage_reduces_demand_misses,
     R10_low_prefetch_accuracy_hurts,
     R11_stores_hit_less_than_loads,

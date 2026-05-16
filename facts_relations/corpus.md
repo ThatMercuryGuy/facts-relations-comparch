@@ -99,14 +99,6 @@ $$\text{LoadHitRate}[C] \geq \text{StoreHitRate}[C] \implies \text{HitRate}[C] \
 
 Domain: any policy, any workload with both loads and stores.
 
-**R8.** Demand Hit Rate ≥ Overall Hit Rate
-
-Prefetch-initiated fills that go unused dilute overall hit rate without hurting demand hits, so demand hit rate is at least as high.
-
-$$\text{DemandHitRate}[C] \geq \text{HitRate}[C] - \varepsilon_8$$
-
-Domain: any cache with prefetching enabled.
-
 **R9.** Prefetch Coverage Reduces Demand Misses
 
 Higher prefetch coverage (fraction of would-be demand misses that prefetches eliminate) directly improves demand hit rate.
