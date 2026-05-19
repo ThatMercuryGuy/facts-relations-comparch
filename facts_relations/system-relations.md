@@ -55,3 +55,13 @@ $$\text{Invalidations}[C_a] \geq \text{Invalidations}[C_b] \implies \text{IPC}[t
 The combined slack $g(\varepsilon_{13}, \varepsilon_{12}, \varepsilon_5)$ cannot be decomposed into independent per-link contributions. $\varepsilon_{13}$ is loose when invalidations hit lines that were about to be evicted anyway — the coherence miss overlaps with what would have been a capacity miss, so the re-fetch is not an additional cost. $\varepsilon_5$ is loose when out-of-order execution hides miss latency via memory-level parallelism. These interact in a non-trivial way: bursty invalidations (tight $\varepsilon_{13}$ within each burst) create bursty stall patterns that the reorder buffer can absorb (loosening $\varepsilon_5$). Conversely, a steady drip of invalidations (loose $\varepsilon_{13}$ per individual event) produces a sustained throughput drag with predictable stall patterns (tightening $\varepsilon_5$). Tightening one epsilon can loosen another — they cannot be solved independently.
 
 ---
+
+## Entity Legend
+
+| Symbol | Name | Description |
+|--------|------|-------------|
+| $C$    | Cache | A cache instance |
+| $C_a$  | Cache A | A cache instance at a given level (e.g., L2, LLC) in the hierarchy |
+| $C_b$  | Cache B | A second cache instance at the same level as $C_a$ |
+| $t_a$  | Interval A | A large program execution interval |
+| $t_b$  | Interval B | A second large program execution interval |
