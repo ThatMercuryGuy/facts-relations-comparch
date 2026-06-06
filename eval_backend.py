@@ -222,6 +222,60 @@ def parse_stats_file_windows(path: str | Path) -> list[dict[str, float]]:
     return windows
 
 
+def parse_opt_trace_results(path: str | Path) -> list[dict[str, float]]:
+    """Parse a Belady-OPT trace_llc_results.txt into per-ROI hit-rate dicts.
+
+    The file is a whitespace-delimited table with a header row:
+        roi  hits  misses  hit_rate  warmup  roi_accesses
+
+    Returns a list where result[i] holds the OPT stats for the i-th ROI window:
+        {"hits": ..., "misses": ..., "hit_rate": ..., "accesses": ...}
+
+    The i-th entry lines up with the i-th ROI window in the matching gem5
+    stats.txt, so OPT hit rate can be compared against the actual policy's
+    hit rate window-by-window.
+    """
+    rows: list[dict[str, float]] = []
+    with open(path) as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) < 6:
+                continue
+            # skip the header row (non-numeric first column)
+            try:
+                roi = int(parts[0])
+            except ValueError:
+                continue
+            try:
+                hits = float(parts[1])
+                misses = float(parts[2])
+                hit_rate = float(parts[3])
+                accesses = float(parts[5])
+            except ValueError:
+                continue
+            rows.append({
+                "roi": roi,
+                "hits": hits,
+                "misses": misses,
+                "hit_rate": hit_rate,
+                "accesses": accesses,
+            })
+    return rows
+
+
+def opt_window_stats(opt_row: dict[str, float], prefix: str) -> dict[str, float]:
+    """Build a synthetic gem5-style stats dict for one OPT ROI window.
+
+    Lets the standard resolve_metric(HIT_RATE) path work on OPT data by
+    exposing the trace's hits/accesses under the LLC overall* stat keys.
+    """
+    return {
+        f"{prefix}.overallHits::total": opt_row["hits"],
+        f"{prefix}.overallMisses::total": opt_row["misses"],
+        f"{prefix}.overallAccesses::total": opt_row["accesses"],
+    }
+
+
 # =============================================================================
 # METRIC RESOLUTION
 # =============================================================================
@@ -1155,6 +1209,217 @@ def format_cross_config_benchmark_table(summaries: list[CrossConfigEvalSummary])
 
 
 # =============================================================================
+# OPT (R3: OPT UPPER-BOUNDS ALL POLICIES) EVALUATION
+# =============================================================================
+
+@dataclass
+class OptWindowResult:
+    """Result for R3 at one ROI window: OPT vs actual policy hit rate."""
+    window_index: int
+    premises_hold: bool | None
+    consequent_holds: bool | None
+    epsilon: dict[str, float] | None
+    hit_rate_opt: float | None
+    hit_rate_actual: float | None
+
+
+@dataclass
+class OptEvalSummary:
+    """Aggregate R3 results across all ROI windows for one benchmark."""
+    relation_name: str
+    benchmark: str
+    num_windows: int
+    premises_met: int
+    holds_count: int
+    violated_count: int
+    unevaluable_count: int
+    min_epsilon: float | None
+    max_epsilon: float | None
+    mean_epsilon: float | None
+    window_results: list[OptWindowResult]
+
+
+def evaluate_opt_relation(
+    relation: Relation,
+    actual_windows: list[dict[str, float]],
+    opt_rows: list[dict[str, float]],
+    component_prefix: str,
+    benchmark_name: str = "",
+) -> OptEvalSummary:
+    """Evaluate R3 (OPT upper-bounds the actual policy) per ROI window.
+
+    For each window i, C_any is bound to the *same* gem5 stats used for R5
+    (the actual replacement policy's LLC hits/accesses), and C_opt is bound
+    to the Belady-OPT trace's hits/accesses for that ROI. Both caches share
+    the same geometry, so the SIZE/ASSOC equality premises are satisfied by
+    supplying matching dummy config values.
+
+        Size[C_opt]=Size[C_any] ∧ Assoc[C_opt]=Assoc[C_any]
+            => HitRate[C_opt] >= HitRate[C_any] - ε_3
+    """
+    cache_entities = [e for e in relation.entities if e.kind == "cache"]
+    assert len(cache_entities) == 2
+    # C_opt is the first cache entity, C_any the second (per corpus R3 def)
+    opt_name = cache_entities[0].name
+    any_name = cache_entities[1].name
+    policy_entities = [e for e in relation.entities if e.kind == "policy"]
+
+    # Matching geometry: identical dummy SIZE/ASSOC for both caches.
+    geom = {MetricKind.SIZE: 1.0, MetricKind.ASSOCIATIVITY: 1.0}
+
+    num_windows = min(len(actual_windows), len(opt_rows))
+    window_results: list[OptWindowResult] = []
+    epsilons_collected: list[float] = []
+
+    for w in range(num_windows):
+        actual_stats = actual_windows[w]
+        opt_stats = opt_window_stats(opt_rows[w], component_prefix)
+
+        binding_opt = EntityBinding(
+            entity_name=opt_name,
+            stats=opt_stats,
+            component_prefix=component_prefix,
+            config=dict(geom),
+            window_index=w,
+        )
+        binding_any = EntityBinding(
+            entity_name=any_name,
+            stats=actual_stats,
+            component_prefix=component_prefix,
+            config=dict(geom),
+            window_index=w,
+        )
+        bindings = [binding_opt, binding_any]
+
+        # Bind policy entities so the relation's entity list resolves. No
+        # metric in R3 references a policy, so the bound stats are irrelevant.
+        for pe in policy_entities:
+            bindings.append(EntityBinding(
+                entity_name=pe.name,
+                stats=actual_stats,
+                component_prefix=component_prefix,
+                config={},
+            ))
+
+        result = evaluate_relation(relation, bindings)
+
+        hr_opt = resolve_metric(MetricKind.HIT_RATE, opt_stats, component_prefix)
+        hr_actual = resolve_metric(MetricKind.HIT_RATE, actual_stats, component_prefix)
+
+        window_results.append(OptWindowResult(
+            window_index=w,
+            premises_hold=result.premises_hold,
+            consequent_holds=result.consequent_holds,
+            epsilon=result.epsilon,
+            hit_rate_opt=hr_opt,
+            hit_rate_actual=hr_actual,
+        ))
+
+        if result.premises_hold is True and result.epsilon:
+            for v in result.epsilon.values():
+                epsilons_collected.append(v)
+
+    premises_met = sum(1 for r in window_results if r.premises_hold is True)
+    holds = sum(1 for r in window_results
+                if r.premises_hold is True and r.consequent_holds is True)
+    violated = sum(1 for r in window_results
+                   if r.premises_hold is True and r.consequent_holds is False)
+    unevaluable = sum(1 for r in window_results
+                      if r.premises_hold is True and r.consequent_holds is None)
+
+    return OptEvalSummary(
+        relation_name=relation.name,
+        benchmark=benchmark_name,
+        num_windows=num_windows,
+        premises_met=premises_met,
+        holds_count=holds,
+        violated_count=violated,
+        unevaluable_count=unevaluable,
+        min_epsilon=min(epsilons_collected) if epsilons_collected else None,
+        max_epsilon=max(epsilons_collected) if epsilons_collected else None,
+        mean_epsilon=(sum(epsilons_collected) / len(epsilons_collected)
+                      if epsilons_collected else None),
+        window_results=window_results,
+    )
+
+
+def format_opt_summary(summary: OptEvalSummary) -> str:
+    """Format an OptEvalSummary as human-readable text."""
+    lines: list[str] = []
+    lines.append(f"{'=' * 70}")
+    lines.append(f"[{summary.relation_name}] Benchmark: {summary.benchmark} "
+                 f"({summary.num_windows} windows)")
+    lines.append(f"{'=' * 70}")
+    lines.append("")
+    lines.append(f"  Premises met: {summary.premises_met}/{summary.num_windows}")
+    lines.append(f"  Consequent holds (eps=0): {summary.holds_count}/{summary.premises_met}")
+    lines.append(f"  Violated (eps>0): {summary.violated_count}/{summary.premises_met}")
+    if summary.unevaluable_count:
+        lines.append(f"  Unevaluable: {summary.unevaluable_count}")
+    lines.append("")
+
+    if summary.min_epsilon is not None:
+        lines.append(f"  Epsilon statistics (hit rate units, across premise-met windows):")
+        lines.append(f"    min:  {summary.min_epsilon:.6f}")
+        lines.append(f"    max:  {summary.max_epsilon:.6f}")
+        lines.append(f"    mean: {summary.mean_epsilon:.6f}")
+        lines.append("")
+
+    lines.append(f"  Per-window detail:")
+    for wr in summary.window_results:
+        eps_str = ""
+        if wr.epsilon:
+            eps_val = list(wr.epsilon.values())[0]
+            status = "HOLDS" if eps_val <= 1e-9 else f"VIOLATED eps={eps_val:.6f}"
+            eps_str = f" -> {status}"
+        opt_s = f"{wr.hit_rate_opt:.4f}" if wr.hit_rate_opt is not None else "N/A"
+        act_s = f"{wr.hit_rate_actual:.4f}" if wr.hit_rate_actual is not None else "N/A"
+        lines.append(f"    w{wr.window_index}: "
+                     f"HR_opt={opt_s}  HR_actual={act_s}{eps_str}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def format_opt_benchmark_table(summaries: list[OptEvalSummary]) -> str:
+    """Format a cross-benchmark summary table for R3 OPT evaluation."""
+    lines: list[str] = []
+    lines.append(f"{'=' * 70}")
+    if summaries:
+        lines.append(f"OPT CROSS-BENCHMARK SUMMARY: {summaries[0].relation_name}")
+    lines.append(f"{'=' * 70}")
+    lines.append("")
+    lines.append(f"  {'Benchmark':<16} {'Windows':>7} {'Prem-Met':>8} "
+                 f"{'Holds':>5} {'Violated':>8} {'Min-Eps':>10} {'Max-Eps':>10}")
+    lines.append(f"  {'-'*16} {'-'*7} {'-'*8} {'-'*5} {'-'*8} {'-'*10} {'-'*10}")
+
+    total_premises_met = 0
+    total_holds = 0
+    all_eps: list[float] = []
+
+    for s in summaries:
+        min_e = f"{s.min_epsilon:.6f}" if s.min_epsilon is not None else "N/A"
+        max_e = f"{s.max_epsilon:.6f}" if s.max_epsilon is not None else "N/A"
+        lines.append(f"  {s.benchmark:<16} {s.num_windows:>7} {s.premises_met:>8} "
+                     f"{s.holds_count:>5} {s.violated_count:>8} {min_e:>10} {max_e:>10}")
+        total_premises_met += s.premises_met
+        total_holds += s.holds_count
+        for wr in s.window_results:
+            if wr.premises_hold is True and wr.epsilon:
+                all_eps.extend(wr.epsilon.values())
+
+    lines.append("")
+    if total_premises_met > 0:
+        pct = 100.0 * total_holds / total_premises_met
+        lines.append(f"  Total windows where premises hold: {total_premises_met}")
+        lines.append(f"  Relation holds (eps=0): {total_holds} ({pct:.1f}%)")
+    if all_eps:
+        lines.append(f"  Global max epsilon: {max(all_eps):.6f}")
+        lines.append(f"  Global mean epsilon: {sum(all_eps)/len(all_eps):.6f}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+# =============================================================================
 # MAIN: DEMO AGAINST SAMPLE WORKLOADS
 # =============================================================================
 
@@ -1163,6 +1428,7 @@ if __name__ == "__main__":
     from corpus import (
         ALL_RELATIONS,
         R1_larger_cache_higher_hr,
+        R3_opt_upper_bounds_all_policies,
         R5_hit_rate_implies_fewer_stalls,
         R6_critical_hit_rate_implies_fewer_stalls,
         R11_stores_hit_less_than_loads,
@@ -1171,7 +1437,7 @@ if __name__ == "__main__":
     output_path = Path(__file__).resolve().parent / "eval_results.txt"
     lines: list[str] = []
 
-    multi_roi_dir = Path(__file__).resolve().parent.parent.parent / "gem5-configs" / "output"
+    multi_roi_dir = Path(__file__).resolve().parent.parent / "gem5-configs" / "output"
 
     if multi_roi_dir.exists():
         benchmark_dirs = sorted(d for d in multi_roi_dir.iterdir() if d.is_dir())
@@ -1416,6 +1682,49 @@ if __name__ == "__main__":
         lines.append("")
     else:
         lines.append("  No benchmark directories found, skipping R11 evaluation.")
+        lines.append("")
+
+    # --- Section 5: R3 (OPT Upper-Bounds All Policies) ---
+    # OPT hit rates come from the per-ROI Belady trace results in output-opt/.
+    # The actual-policy hit rates reuse the SAME gem5 stats as R5 (the LLC
+    # overall hits/accesses from gem5-configs/output/), compared window-by-window.
+    opt_dir = Path(__file__).resolve().parent.parent / "output-opt"
+
+    lines.append("")
+    lines.append("OPT RELATION EVALUATION (R3: OPT Upper-Bounds All Policies)")
+    lines.append(f"OPT source: {opt_dir} (trace_llc_results.txt per benchmark)")
+    lines.append(f"Actual-policy source: {multi_roi_dir} (same LLC hit rates as R5)")
+    lines.append(f"Relation: HitRate[C_opt] >= HitRate[C_any] - ε_3 (per ROI window)")
+    lines.append("")
+
+    if benchmark_dirs and opt_dir.exists():
+        opt_summaries: list[OptEvalSummary] = []
+
+        for bench_dir in benchmark_dirs:
+            stats_path = bench_dir / "stats.txt"
+            opt_path = opt_dir / bench_dir.name / "trace_llc_results.txt"
+            if not stats_path.exists() or not opt_path.exists():
+                continue
+
+            actual_windows = parse_stats_file_windows(stats_path)
+            opt_rows = parse_opt_trace_results(opt_path)
+            if not actual_windows or not opt_rows:
+                continue
+
+            summary = evaluate_opt_relation(
+                R3_opt_upper_bounds_all_policies,
+                actual_windows,
+                opt_rows,
+                LLC_PREFIX,
+                benchmark_name=bench_dir.name,
+            )
+            opt_summaries.append(summary)
+            lines.append(format_opt_summary(summary))
+
+        if opt_summaries:
+            lines.append(format_opt_benchmark_table(opt_summaries))
+    else:
+        lines.append("  No OPT trace results found, skipping R3 evaluation.")
         lines.append("")
 
     # --- Write combined output ---

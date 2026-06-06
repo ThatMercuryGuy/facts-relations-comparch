@@ -1,58 +1,76 @@
-# CLAUDE.md
+# Facts & Relations: Lightweight Cache Microarchitecture Verification
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+A minimal framework for stating falsifiable claims about cache replacement and verifying them against gem5 simulation data.
 
 ## What This Is
 
-A framework for encoding falsifiable claims about cache replacement microarchitecture as structured ASTs. Relations like "larger cache implies higher hit rate" are expressed as typed expression trees that three backends consume: Z3 (symbolic consistency/counterexample search), direct evaluation (check against gem5 stats), and experiment generation (produce gem5 configs to test the claim).
+A relation is a claim: "if cache A has property X and cache B has property Y, then the outcome satisfies Z (within tolerance ε)."
+
+For example: "If cache A has size ≥ cache B's size, then A's hit rate ≥ B's hit rate (within epsilon_1)."
+
+## Files
+
+- **`relations.py`** — 15 relation definitions (facts F1–F2 and relations R1–R14). Each relation is a dict with:
+  - `name`: identifier (F1, R1, etc.)
+  - `claim`: callable that checks if the relation holds for given data
+  - `epsilon_name`: name of slack variable (or None for exact relations)
+  - `requires`: list of metric names the claim needs
+
+- **`eval.py`** — Evaluator. Loads gem5 stats.txt files, resolves metrics, checks each relation, computes minimum epsilon needed. Outputs to eval_results.txt.
+
+- **`corpus.md`** — Human-readable LaTeX descriptions of each relation (unchanged).
+
+- **`system-relations.md`** — Coupled epsilon systems and interactions (unchanged).
 
 ## Running
 
 ```bash
-# Print the full corpus summary (no dependencies beyond stdlib)
-python3 corpus.py
+# Evaluate a single stats file
+python3 eval.py /path/to/stats.txt
 
-# Evaluate corpus against gem5 stats, writes results to eval_results.txt
-python3 eval_backend.py
+# Evaluate multiple stats files
+python3 eval.py run1/stats.txt run2/stats.txt run3/stats.txt
 
-# Generate experiment plans, writes to experiment_plans.txt
-python3 experiment_gen.py
-
-# Type-check (no mypy config exists yet, but the code uses type annotations)
-python3 -c "import core; import corpus; import eval_backend; import experiment_gen"
+# Results go to eval_results.txt
 ```
-
-No third-party dependencies. Z3 backend (planned) will require `z3-solver`. Sample gem5 stats live in `../sample_workloads/`.
-
-## Architecture
-
-**`core.py`** — The entire type system: `Entity`, `MetricKind` (enum of ~18 measurable quantities), expression AST (`Literal`, `MetricRef`, `Epsilon`, `BinOp`, `UnaryOp`), `Constraint`, logical connectives (`Conjunction`, `Disjunction`), and the top-level `Relation` dataclass. Also contains builder DSL functions (`entity()`, `metric()`, `lit()`, `eps()`, `constraint()`, `conj()`, `relation()`, `add/sub/mul/div`).
-
-**`corpus.py`** — 16 relations organized in groups A–G, using the builder DSL. `ALL_RELATIONS` list at the bottom is the canonical collection. The `assert len(ALL_RELATIONS) == 16` guard at the bottom must be updated when adding/removing relations.
-
-**`eval_backend.py`** — Evaluates relations against gem5 stats dumps. Parses stats files, resolves MetricKinds to gem5 stat formulas (with fallbacks like hits = accesses - misses), walks the AST. For relations with free epsilons, computes the minimum epsilon needed to make the relation true (0 = already holds, positive = needs that much tolerance). Exact relations (no epsilon) just report True/False. Single-entity relations evaluate from one stats file; multi-entity relations require separate simulation runs bound via `EntityBinding`. Outputs to `eval_results.txt`.
-
-**`experiment_gen.py`** — Extracts structured experiment plans from relations by walking the AST. For each relation, reports: how many gem5 runs are needed, which parameters are shared (from EQ premises), which form sweep axes (from inequality premises), complex constraints (ratio relationships, literal thresholds) printed as-is, and which metrics to collect from each run. Does not generate concrete parameter values or gem5 configs — the user decides what to simulate. Outputs to `experiment_plans.txt`.
-
-**`corpus.md`** — Human-readable LaTeX descriptions of each relation.
-
-**`system-relations.md`** — Describes coupled epsilon systems (transitive chains, interference coupling) where multiple relations share latent variables.
-
-## Key Design Constraints
-
-- All AST types are **frozen dataclasses** — never mutate, always construct new instances.
-- `Expr` is a union type (`Union[Literal, MetricRef, BinOp, UnaryOp, Epsilon]`). Backends use `isinstance` dispatch (Python 3.8 compatible).
-- Epsilons are first-class AST nodes, not float constants. Each backend interprets them differently (Z3: existential variable to minimize; eval: minimum epsilon needed to make relation true, 0 if it already holds; experiment-gen: signals approximate relation).
-- Entity `kind` field (`"cache"`, `"policy"`, `"workload"`, `"interval"`) determines which gem5 subsystem the experiment generator maps it to.
-- `bindings` on a Relation pair entities (e.g., cache→policy) without polluting the AST with fake binding metrics.
 
 ## Adding a New Relation
 
-1. Define entities and epsilon(s) at module level in `corpus.py`
-2. Use the builder DSL to construct the `Relation`
-3. Add it to `ALL_RELATIONS` and update the assert count
-4. Document it in `corpus.md` with LaTeX notation
+1. Add a dict to `relations.py` with `name`, `description`, `premises`, `claim`, `epsilon_name`, `requires`.
+2. Add it to `ALL_RELATIONS` list.
+3. Update the assert at the bottom.
 
-## Planned but Not Yet Implemented
+Example:
 
-- `z3_backend.py` — Lower Relations to Z3 ForAll/Implies formulas
+```python
+R_my_claim = {
+    'name': 'R15',
+    'description': 'my claim about cache behavior',
+    'premises': ['some_metric_a >= some_metric_b'],
+    'claim': lambda d: d.get('outcome_a', 0) >= d.get('outcome_b', 0),
+    'epsilon_name': 'eps_15',
+    'requires': ['outcome_a', 'outcome_b', 'some_metric_a', 'some_metric_b'],
+}
+
+ALL_RELATIONS.append(R_my_claim)
+assert len(ALL_RELATIONS) == 16  # update count
+```
+
+## Metric Resolution
+
+The evaluator resolves high-level metric names to gem5 stats, prioritizing LLC (L3) cache:
+- `hit_rate` → `hits / accesses` (LLC/L3 cache)
+- `miss_rate` → `misses / accesses`
+- `load_hit_rate`, `store_hit_rate` → read/write hit rates
+- `stalls` → `cycles - instructions`
+- `evictions`, `writebacks`, `total_misses` → direct stat lookups
+
+All metrics are mapped to `board.cache_hierarchy.llcache.*` stats. Add more metric resolution logic in `resolve_metric()`.
+
+## Design Notes
+
+- Relations are just dicts + lambdas — no heavy AST machinery.
+- Each claim is a pure function: `data dict -> bool`.
+- Epsilon computation is intentionally simple for now (can be refined later).
+- Single-entity relations (F1, F2) check properties of one dataset.
+- Multi-entity relations compare two or more datasets (pass them as separate keys in data dict).
