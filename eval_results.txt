@@ -1,104 +1,479 @@
 RELATION EVALUATION SUMMARY
 ======================================================================
 
-File: /scratch/cluster/rao/output-opt/429.mcf/stats.txt
+Benchmark: 429.mcf
 ----------------------------------------------------------------------
-  HOLDS: 24, VIOLATED: 0, UNEVALUABLE: 66
+  [F1] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [F2] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [R1] HOLDS 18/18, VIOLATED 0, max_eps 0  (kind=cross_config)
+        (default,llc_4MiB)@w0: HOLDS eps=0.0
+        (default,llc_4MiB)@w1: HOLDS eps=0.0
+        (default,llc_4MiB)@w2: HOLDS eps=0.0
+        (default,llc_4MiB)@w3: HOLDS eps=0.0
+        (default,llc_4MiB)@w4: HOLDS eps=0.0
+        (default,llc_4MiB)@w5: HOLDS eps=0.0
+  [R2] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: size, assoc — kind=unsupported (data not collected)
+  [R3] HOLDS 6/6, VIOLATED 0, max_eps 0  (kind=opt)
+        w0: HOLDS eps=0.0
+        w1: HOLDS eps=0.0
+        w2: HOLDS eps=0.0
+        w3: HOLDS eps=0.0
+        w4: HOLDS eps=0.0
+        w5: HOLDS eps=0.0
+  [R4] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: conflict_misses, assoc, size — kind=unsupported (data not collected)
+  [R5] HOLDS 5/15, VIOLATED 10, max_eps 0.1716  (kind=interval)
+        (w0,w2): VIOLATED eps=0.17163705971457388
+        (w1,w0): HOLDS eps=0.0
+        (w1,w2): VIOLATED eps=0.055858893293251555
+        (w1,w3): VIOLATED eps=0.06422305213625351
+        (w1,w4): VIOLATED eps=0.039417277430794984
+        (w1,w5): VIOLATED eps=0.04885693385133644
+  [R6] HOLDS 12/15, VIOLATED 3, max_eps 0.01644  (kind=interval)
+        (w1,w0): HOLDS eps=0.0
+        (w2,w0): HOLDS eps=0.0
+        (w2,w1): HOLDS eps=0.0
+        (w3,w0): HOLDS eps=0.0
+        (w3,w1): HOLDS eps=0.0
+        (w3,w2): HOLDS eps=0.0
+  [R7] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [R9] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: demand_hit_rate, prefetch_coverage — kind=unsupported (data not collected)
+  [R10] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: demand_hit_rate, prefetch_accuracy — kind=unsupported (data not collected)
+  [R11] HOLDS 6/6, VIOLATED 0, max_eps 0  (kind=single)
+        w0: HOLDS eps=0.0
+        w1: HOLDS eps=0.0
+        w2: HOLDS eps=0.0
+        w3: HOLDS eps=0.0
+        w4: HOLDS eps=0.0
+        w5: HOLDS eps=0.0
+  [R12] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: compulsory_misses, capacity_misses, conflict_misses, coherence_misses — kind=unsupported (data not collected)
+  [R13] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: coherence_misses, invalidations — kind=unsupported (data not collected)
+  [R14] HOLDS 4/7, VIOLATED 3, max_eps 535,810  (kind=interval)
+        (w3,w0): VIOLATED eps=535810.0
+        (w4,w0): VIOLATED eps=413214.0
+        (w4,w2): HOLDS eps=0.0
+        (w4,w3): HOLDS eps=0.0
+        (w5,w0): VIOLATED eps=478112.0
+        (w5,w2): HOLDS eps=0.0
 
-  Window 0:
-      [F1] HOLDS
-      [F2] HOLDS
-      [R1] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, size_a, size_b
-      [R2] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, hit_rate_c, size_a, size_b, size_c, assoc_a, assoc_b, assoc_c
-      [R3] UNEVALUABLE — missing: hit_rate_opt, hit_rate_policy, size_opt, size_policy, assoc_opt, assoc_policy
-      [R4] UNEVALUABLE — missing: conflict_misses_hi, conflict_misses_lo, assoc_hi, assoc_lo, size_hi, size_lo
-      [R5] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, stalls_a, stalls_b
-      [R6] UNEVALUABLE — missing: critical_hit_rate_a, critical_hit_rate_b, stalls_a, stalls_b
-      [R7] HOLDS
-      [R9] UNEVALUABLE — missing: demand_hit_rate_a, demand_hit_rate_b, prefetch_coverage_a, prefetch_coverage_b
-      [R10] UNEVALUABLE — missing: demand_hit_rate_prefetch, demand_hit_rate_no_prefetch, prefetch_accuracy
-      [R11] HOLDS (epsilon=0.0)
-      [R12] UNEVALUABLE — missing: compulsory_misses, capacity_misses, conflict_misses, coherence_misses
-      [R13] UNEVALUABLE — missing: coherence_misses_a, coherence_misses_b, invalidations_a, invalidations_b
-      [R14] UNEVALUABLE — missing: writebacks_a, writebacks_b, store_hit_rate_a, store_hit_rate_b, evictions_a, evictions_b, size_a, size_b
-  Window 1:
-      [F1] HOLDS
-      [F2] HOLDS
-      [R1] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, size_a, size_b
-      [R2] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, hit_rate_c, size_a, size_b, size_c, assoc_a, assoc_b, assoc_c
-      [R3] UNEVALUABLE — missing: hit_rate_opt, hit_rate_policy, size_opt, size_policy, assoc_opt, assoc_policy
-      [R4] UNEVALUABLE — missing: conflict_misses_hi, conflict_misses_lo, assoc_hi, assoc_lo, size_hi, size_lo
-      [R5] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, stalls_a, stalls_b
-      [R6] UNEVALUABLE — missing: critical_hit_rate_a, critical_hit_rate_b, stalls_a, stalls_b
-      [R7] HOLDS
-      [R9] UNEVALUABLE — missing: demand_hit_rate_a, demand_hit_rate_b, prefetch_coverage_a, prefetch_coverage_b
-      [R10] UNEVALUABLE — missing: demand_hit_rate_prefetch, demand_hit_rate_no_prefetch, prefetch_accuracy
-      [R11] HOLDS (epsilon=0.0)
-      [R12] UNEVALUABLE — missing: compulsory_misses, capacity_misses, conflict_misses, coherence_misses
-      [R13] UNEVALUABLE — missing: coherence_misses_a, coherence_misses_b, invalidations_a, invalidations_b
-      [R14] UNEVALUABLE — missing: writebacks_a, writebacks_b, store_hit_rate_a, store_hit_rate_b, evictions_a, evictions_b, size_a, size_b
-  Window 2:
-      [F1] HOLDS
-      [F2] HOLDS
-      [R1] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, size_a, size_b
-      [R2] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, hit_rate_c, size_a, size_b, size_c, assoc_a, assoc_b, assoc_c
-      [R3] UNEVALUABLE — missing: hit_rate_opt, hit_rate_policy, size_opt, size_policy, assoc_opt, assoc_policy
-      [R4] UNEVALUABLE — missing: conflict_misses_hi, conflict_misses_lo, assoc_hi, assoc_lo, size_hi, size_lo
-      [R5] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, stalls_a, stalls_b
-      [R6] UNEVALUABLE — missing: critical_hit_rate_a, critical_hit_rate_b, stalls_a, stalls_b
-      [R7] HOLDS
-      [R9] UNEVALUABLE — missing: demand_hit_rate_a, demand_hit_rate_b, prefetch_coverage_a, prefetch_coverage_b
-      [R10] UNEVALUABLE — missing: demand_hit_rate_prefetch, demand_hit_rate_no_prefetch, prefetch_accuracy
-      [R11] HOLDS (epsilon=0.0)
-      [R12] UNEVALUABLE — missing: compulsory_misses, capacity_misses, conflict_misses, coherence_misses
-      [R13] UNEVALUABLE — missing: coherence_misses_a, coherence_misses_b, invalidations_a, invalidations_b
-      [R14] UNEVALUABLE — missing: writebacks_a, writebacks_b, store_hit_rate_a, store_hit_rate_b, evictions_a, evictions_b, size_a, size_b
-  Window 3:
-      [F1] HOLDS
-      [F2] HOLDS
-      [R1] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, size_a, size_b
-      [R2] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, hit_rate_c, size_a, size_b, size_c, assoc_a, assoc_b, assoc_c
-      [R3] UNEVALUABLE — missing: hit_rate_opt, hit_rate_policy, size_opt, size_policy, assoc_opt, assoc_policy
-      [R4] UNEVALUABLE — missing: conflict_misses_hi, conflict_misses_lo, assoc_hi, assoc_lo, size_hi, size_lo
-      [R5] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, stalls_a, stalls_b
-      [R6] UNEVALUABLE — missing: critical_hit_rate_a, critical_hit_rate_b, stalls_a, stalls_b
-      [R7] HOLDS
-      [R9] UNEVALUABLE — missing: demand_hit_rate_a, demand_hit_rate_b, prefetch_coverage_a, prefetch_coverage_b
-      [R10] UNEVALUABLE — missing: demand_hit_rate_prefetch, demand_hit_rate_no_prefetch, prefetch_accuracy
-      [R11] HOLDS (epsilon=0.0)
-      [R12] UNEVALUABLE — missing: compulsory_misses, capacity_misses, conflict_misses, coherence_misses
-      [R13] UNEVALUABLE — missing: coherence_misses_a, coherence_misses_b, invalidations_a, invalidations_b
-      [R14] UNEVALUABLE — missing: writebacks_a, writebacks_b, store_hit_rate_a, store_hit_rate_b, evictions_a, evictions_b, size_a, size_b
-  Window 4:
-      [F1] HOLDS
-      [F2] HOLDS
-      [R1] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, size_a, size_b
-      [R2] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, hit_rate_c, size_a, size_b, size_c, assoc_a, assoc_b, assoc_c
-      [R3] UNEVALUABLE — missing: hit_rate_opt, hit_rate_policy, size_opt, size_policy, assoc_opt, assoc_policy
-      [R4] UNEVALUABLE — missing: conflict_misses_hi, conflict_misses_lo, assoc_hi, assoc_lo, size_hi, size_lo
-      [R5] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, stalls_a, stalls_b
-      [R6] UNEVALUABLE — missing: critical_hit_rate_a, critical_hit_rate_b, stalls_a, stalls_b
-      [R7] HOLDS
-      [R9] UNEVALUABLE — missing: demand_hit_rate_a, demand_hit_rate_b, prefetch_coverage_a, prefetch_coverage_b
-      [R10] UNEVALUABLE — missing: demand_hit_rate_prefetch, demand_hit_rate_no_prefetch, prefetch_accuracy
-      [R11] HOLDS (epsilon=0.0)
-      [R12] UNEVALUABLE — missing: compulsory_misses, capacity_misses, conflict_misses, coherence_misses
-      [R13] UNEVALUABLE — missing: coherence_misses_a, coherence_misses_b, invalidations_a, invalidations_b
-      [R14] UNEVALUABLE — missing: writebacks_a, writebacks_b, store_hit_rate_a, store_hit_rate_b, evictions_a, evictions_b, size_a, size_b
-  Window 5:
-      [F1] HOLDS
-      [F2] HOLDS
-      [R1] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, size_a, size_b
-      [R2] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, hit_rate_c, size_a, size_b, size_c, assoc_a, assoc_b, assoc_c
-      [R3] UNEVALUABLE — missing: hit_rate_opt, hit_rate_policy, size_opt, size_policy, assoc_opt, assoc_policy
-      [R4] UNEVALUABLE — missing: conflict_misses_hi, conflict_misses_lo, assoc_hi, assoc_lo, size_hi, size_lo
-      [R5] UNEVALUABLE — missing: hit_rate_a, hit_rate_b, stalls_a, stalls_b
-      [R6] UNEVALUABLE — missing: critical_hit_rate_a, critical_hit_rate_b, stalls_a, stalls_b
-      [R7] HOLDS
-      [R9] UNEVALUABLE — missing: demand_hit_rate_a, demand_hit_rate_b, prefetch_coverage_a, prefetch_coverage_b
-      [R10] UNEVALUABLE — missing: demand_hit_rate_prefetch, demand_hit_rate_no_prefetch, prefetch_accuracy
-      [R11] HOLDS (epsilon=0.0)
-      [R12] UNEVALUABLE — missing: compulsory_misses, capacity_misses, conflict_misses, coherence_misses
-      [R13] UNEVALUABLE — missing: coherence_misses_a, coherence_misses_b, invalidations_a, invalidations_b
-      [R14] UNEVALUABLE — missing: writebacks_a, writebacks_b, store_hit_rate_a, store_hit_rate_b, evictions_a, evictions_b, size_a, size_b
+Benchmark: 450.soplex
+----------------------------------------------------------------------
+  [F1] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [F2] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [R1] HOLDS 18/18, VIOLATED 0, max_eps 0  (kind=cross_config)
+        (default,llc_4MiB)@w0: HOLDS eps=0.0
+        (default,llc_4MiB)@w1: HOLDS eps=0.0
+        (default,llc_4MiB)@w2: HOLDS eps=0.0
+        (default,llc_4MiB)@w3: HOLDS eps=0.0
+        (default,llc_4MiB)@w4: HOLDS eps=0.0
+        (default,llc_4MiB)@w5: HOLDS eps=0.0
+  [R2] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: size, assoc — kind=unsupported (data not collected)
+  [R3] HOLDS 6/6, VIOLATED 0, max_eps 0  (kind=opt)
+        w0: HOLDS eps=0.0
+        w1: HOLDS eps=0.0
+        w2: HOLDS eps=0.0
+        w3: HOLDS eps=0.0
+        w4: HOLDS eps=0.0
+        w5: HOLDS eps=0.0
+  [R4] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: conflict_misses, assoc, size — kind=unsupported (data not collected)
+  [R5] HOLDS 14/15, VIOLATED 1, max_eps 0.002419  (kind=interval)
+        (w0,w1): HOLDS eps=0.0
+        (w0,w2): HOLDS eps=0.0
+        (w0,w3): HOLDS eps=0.0
+        (w0,w4): HOLDS eps=0.0
+        (w0,w5): HOLDS eps=0.0
+        (w1,w2): HOLDS eps=0.0
+  [R6] HOLDS 9/15, VIOLATED 6, max_eps 0.04047  (kind=interval)
+        (w1,w0): VIOLATED eps=0.009121671227479658
+        (w1,w2): HOLDS eps=0.0
+        (w1,w4): HOLDS eps=0.0
+        (w1,w5): HOLDS eps=0.0
+        (w2,w0): VIOLATED eps=0.039267582058245314
+        (w2,w4): HOLDS eps=0.0
+  [R7] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [R9] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: demand_hit_rate, prefetch_coverage — kind=unsupported (data not collected)
+  [R10] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: demand_hit_rate, prefetch_accuracy — kind=unsupported (data not collected)
+  [R11] HOLDS 6/6, VIOLATED 0, max_eps 0  (kind=single)
+        w0: HOLDS eps=0.0
+        w1: HOLDS eps=0.0
+        w2: HOLDS eps=0.0
+        w3: HOLDS eps=0.0
+        w4: HOLDS eps=0.0
+        w5: HOLDS eps=0.0
+  [R12] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: compulsory_misses, capacity_misses, conflict_misses, coherence_misses — kind=unsupported (data not collected)
+  [R13] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: coherence_misses, invalidations — kind=unsupported (data not collected)
+  [R14] HOLDS 2/3, VIOLATED 1, max_eps 64,119  (kind=interval)
+        (w3,w4): HOLDS eps=0.0
+        (w3,w5): VIOLATED eps=64119.0
+        (w5,w4): HOLDS eps=0.0
+
+Benchmark: 471.omnetpp
+----------------------------------------------------------------------
+  [F1] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [F2] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [R1] HOLDS 18/18, VIOLATED 0, max_eps 0  (kind=cross_config)
+        (default,llc_4MiB)@w0: HOLDS eps=0.0
+        (default,llc_4MiB)@w1: HOLDS eps=0.0
+        (default,llc_4MiB)@w2: HOLDS eps=0.0
+        (default,llc_4MiB)@w3: HOLDS eps=0.0
+        (default,llc_4MiB)@w4: HOLDS eps=0.0
+        (default,llc_4MiB)@w5: HOLDS eps=0.0
+  [R2] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: size, assoc — kind=unsupported (data not collected)
+  [R3] HOLDS 6/6, VIOLATED 0, max_eps 0  (kind=opt)
+        w0: HOLDS eps=0.0
+        w1: HOLDS eps=0.0
+        w2: HOLDS eps=0.0
+        w3: HOLDS eps=0.0
+        w4: HOLDS eps=0.0
+        w5: HOLDS eps=0.0
+  [R4] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: conflict_misses, assoc, size — kind=unsupported (data not collected)
+  [R5] HOLDS 10/15, VIOLATED 5, max_eps 0.01477  (kind=interval)
+        (w0,w1): HOLDS eps=0.0
+        (w0,w2): HOLDS eps=0.0
+        (w0,w3): HOLDS eps=0.0
+        (w0,w4): HOLDS eps=0.0
+        (w0,w5): HOLDS eps=0.0
+        (w1,w2): HOLDS eps=0.0
+  [R6] HOLDS 0/15, VIOLATED 15, max_eps 0.1423  (kind=interval)
+        (w1,w0): VIOLATED eps=0.12325073308245559
+        (w2,w0): VIOLATED eps=0.13385668965048303
+        (w2,w1): VIOLATED eps=0.01060595656802743
+        (w2,w5): VIOLATED eps=0.0020810992826560126
+        (w3,w0): VIOLATED eps=0.14229879269648793
+        (w3,w1): VIOLATED eps=0.01904805961403233
+  [R7] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [R9] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: demand_hit_rate, prefetch_coverage — kind=unsupported (data not collected)
+  [R10] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: demand_hit_rate, prefetch_accuracy — kind=unsupported (data not collected)
+  [R11] HOLDS 6/6, VIOLATED 0, max_eps 0  (kind=single)
+        w0: HOLDS eps=0.0
+        w1: HOLDS eps=0.0
+        w2: HOLDS eps=0.0
+        w3: HOLDS eps=0.0
+        w4: HOLDS eps=0.0
+        w5: HOLDS eps=0.0
+  [R12] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: compulsory_misses, capacity_misses, conflict_misses, coherence_misses — kind=unsupported (data not collected)
+  [R13] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: coherence_misses, invalidations — kind=unsupported (data not collected)
+  [R14] HOLDS 2/3, VIOLATED 1, uneval 10, max_eps 15,992  (kind=interval)
+        (w4,w1): HOLDS eps=0.0
+        (w4,w5): VIOLATED eps=15992.0
+        (w5,w1): HOLDS eps=0.0
+
+Benchmark: 473.astar
+----------------------------------------------------------------------
+  [F1] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [F2] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [R1] HOLDS 17/18, VIOLATED 1, max_eps 0.01974  (kind=cross_config)
+        (default,llc_4MiB)@w0: HOLDS eps=0.0
+        (default,llc_4MiB)@w1: HOLDS eps=0.0
+        (default,llc_4MiB)@w2: HOLDS eps=0.0
+        (default,llc_4MiB)@w3: HOLDS eps=0.0
+        (default,llc_4MiB)@w4: HOLDS eps=0.0
+        (default,llc_4MiB)@w5: HOLDS eps=0.0
+  [R2] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: size, assoc — kind=unsupported (data not collected)
+  [R3] HOLDS 6/6, VIOLATED 0, max_eps 0  (kind=opt)
+        w0: HOLDS eps=0.0
+        w1: HOLDS eps=0.0
+        w2: HOLDS eps=0.0
+        w3: HOLDS eps=0.0
+        w4: HOLDS eps=0.0
+        w5: HOLDS eps=0.0
+  [R4] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: conflict_misses, assoc, size — kind=unsupported (data not collected)
+  [R5] HOLDS 0/15, VIOLATED 15, max_eps 0.008308  (kind=interval)
+        (w0,w1): VIOLATED eps=0.0005966566661116182
+        (w0,w2): VIOLATED eps=0.00023280745128368557
+        (w0,w3): VIOLATED eps=0.008307913625593664
+        (w0,w4): VIOLATED eps=0.007277234293854913
+        (w0,w5): VIOLATED eps=0.006768162544201536
+        (w1,w3): VIOLATED eps=0.0077112569594820456
+  [R6] HOLDS 9/15, VIOLATED 6, max_eps 0.00154  (kind=interval)
+        (w0,w1): VIOLATED eps=0.0005966566661116182
+        (w0,w2): VIOLATED eps=0.00023280745128368557
+        (w2,w1): VIOLATED eps=0.00036384921482793264
+        (w3,w0): HOLDS eps=0.0
+        (w3,w1): HOLDS eps=0.0
+        (w3,w2): HOLDS eps=0.0
+  [R7] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [R9] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: demand_hit_rate, prefetch_coverage — kind=unsupported (data not collected)
+  [R10] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: demand_hit_rate, prefetch_accuracy — kind=unsupported (data not collected)
+  [R11] HOLDS 6/6, VIOLATED 0, max_eps 0  (kind=single)
+        w0: HOLDS eps=0.0
+        w1: HOLDS eps=0.0
+        w2: HOLDS eps=0.0
+        w3: HOLDS eps=0.0
+        w4: HOLDS eps=0.0
+        w5: HOLDS eps=0.0
+  [R12] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: compulsory_misses, capacity_misses, conflict_misses, coherence_misses — kind=unsupported (data not collected)
+  [R13] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: coherence_misses, invalidations — kind=unsupported (data not collected)
+  [R14] HOLDS 0/0, VIOLATED 0  (kind=interval)
+
+Benchmark: 482.sphinx3
+----------------------------------------------------------------------
+  [F1] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [F2] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [R1] HOLDS 18/18, VIOLATED 0, max_eps 0  (kind=cross_config)
+        (default,llc_4MiB)@w0: HOLDS eps=0.0
+        (default,llc_4MiB)@w1: HOLDS eps=0.0
+        (default,llc_4MiB)@w2: HOLDS eps=0.0
+        (default,llc_4MiB)@w3: HOLDS eps=0.0
+        (default,llc_4MiB)@w4: HOLDS eps=0.0
+        (default,llc_4MiB)@w5: HOLDS eps=0.0
+  [R2] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: size, assoc — kind=unsupported (data not collected)
+  [R3] HOLDS 6/6, VIOLATED 0, max_eps 0  (kind=opt)
+        w0: HOLDS eps=0.0
+        w1: HOLDS eps=0.0
+        w2: HOLDS eps=0.0
+        w3: HOLDS eps=0.0
+        w4: HOLDS eps=0.0
+        w5: HOLDS eps=0.0
+  [R4] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: conflict_misses, assoc, size — kind=unsupported (data not collected)
+  [R5] HOLDS 13/15, VIOLATED 2, max_eps 0.003872  (kind=interval)
+        (w0,w1): HOLDS eps=0.0
+        (w0,w2): HOLDS eps=0.0
+        (w0,w4): HOLDS eps=0.0
+        (w0,w5): HOLDS eps=0.0
+        (w2,w1): HOLDS eps=0.0
+        (w3,w0): HOLDS eps=0.0
+  [R6] HOLDS 4/15, VIOLATED 11, max_eps 0.02375  (kind=interval)
+        (w1,w0): VIOLATED eps=0.015194584064479131
+        (w1,w2): VIOLATED eps=0.00788518517347786
+        (w1,w3): VIOLATED eps=0.023746729099415914
+        (w1,w5): VIOLATED eps=0.010016421024196642
+        (w2,w0): VIOLATED eps=0.007309398891001271
+        (w2,w5): VIOLATED eps=0.0021312358507187823
+  [R7] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [R9] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: demand_hit_rate, prefetch_coverage — kind=unsupported (data not collected)
+  [R10] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: demand_hit_rate, prefetch_accuracy — kind=unsupported (data not collected)
+  [R11] HOLDS 6/6, VIOLATED 0, max_eps 0  (kind=single)
+        w0: HOLDS eps=0.0
+        w1: HOLDS eps=0.0
+        w2: HOLDS eps=0.0
+        w3: HOLDS eps=0.0
+        w4: HOLDS eps=0.0
+        w5: HOLDS eps=0.0
+  [R12] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: compulsory_misses, capacity_misses, conflict_misses, coherence_misses — kind=unsupported (data not collected)
+  [R13] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: coherence_misses, invalidations — kind=unsupported (data not collected)
+  [R14] HOLDS 1/1, VIOLATED 0, max_eps 0  (kind=interval)
+        (w4,w5): HOLDS eps=0.0
+
+Benchmark: 483.xalancbmk
+----------------------------------------------------------------------
+  [F1] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [F2] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [R1] HOLDS 18/18, VIOLATED 0, max_eps 0  (kind=cross_config)
+        (default,llc_4MiB)@w0: HOLDS eps=0.0
+        (default,llc_4MiB)@w1: HOLDS eps=0.0
+        (default,llc_4MiB)@w2: HOLDS eps=0.0
+        (default,llc_4MiB)@w3: HOLDS eps=0.0
+        (default,llc_4MiB)@w4: HOLDS eps=0.0
+        (default,llc_4MiB)@w5: HOLDS eps=0.0
+  [R2] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: size, assoc — kind=unsupported (data not collected)
+  [R3] HOLDS 6/6, VIOLATED 0, max_eps 0  (kind=opt)
+        w0: HOLDS eps=0.0
+        w1: HOLDS eps=0.0
+        w2: HOLDS eps=0.0
+        w3: HOLDS eps=0.0
+        w4: HOLDS eps=0.0
+        w5: HOLDS eps=0.0
+  [R4] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: conflict_misses, assoc, size — kind=unsupported (data not collected)
+  [R5] HOLDS 13/15, VIOLATED 2, max_eps 0.004965  (kind=interval)
+        (w0,w2): HOLDS eps=0.0
+        (w0,w3): HOLDS eps=0.0
+        (w0,w4): HOLDS eps=0.0
+        (w0,w5): HOLDS eps=0.0
+        (w1,w0): HOLDS eps=0.0
+        (w1,w2): HOLDS eps=0.0
+  [R6] HOLDS 5/15, VIOLATED 10, max_eps 0.1407  (kind=interval)
+        (w1,w0): HOLDS eps=0.0
+        (w1,w5): HOLDS eps=0.0
+        (w2,w0): VIOLATED eps=0.04090906845188739
+        (w2,w1): VIOLATED eps=0.04283604358550588
+        (w2,w3): HOLDS eps=0.0
+        (w2,w4): HOLDS eps=0.0
+  [R7] HOLDS 6/6, VIOLATED 0  (kind=single)
+        w0: HOLDS
+        w1: HOLDS
+        w2: HOLDS
+        w3: HOLDS
+        w4: HOLDS
+        w5: HOLDS
+  [R9] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: demand_hit_rate, prefetch_coverage — kind=unsupported (data not collected)
+  [R10] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: demand_hit_rate, prefetch_accuracy — kind=unsupported (data not collected)
+  [R11] HOLDS 6/6, VIOLATED 0, max_eps 0  (kind=single)
+        w0: HOLDS eps=0.0
+        w1: HOLDS eps=0.0
+        w2: HOLDS eps=0.0
+        w3: HOLDS eps=0.0
+        w4: HOLDS eps=0.0
+        w5: HOLDS eps=0.0
+  [R12] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: compulsory_misses, capacity_misses, conflict_misses, coherence_misses — kind=unsupported (data not collected)
+  [R13] HOLDS 0/0, VIOLATED 0, uneval 1  (kind=unsupported)
+        UNEVALUABLE — missing: coherence_misses, invalidations — kind=unsupported (data not collected)
+  [R14] HOLDS 0/0, VIOLATED 0  (kind=interval)
+
+PER-RELATION SUMMARY (cells: holds/applicable, '-' = n/a)
+======================================================================
+relation  429.mcf  450.soplex  471.omnetpp  473.astar  482.sphinx3  483.xalancbmk            ALL
+------------------------------------------------------------------------------------------------
+F1            6/6         6/6          6/6        6/6          6/6            6/6   36/36 (100%)
+F2            6/6         6/6          6/6        6/6          6/6            6/6   36/36 (100%)
+R1          18/18       18/18        18/18      17/18        18/18          18/18  107/108 (99%)
+R2              -           -            -          -            -              -              -
+R3            6/6         6/6          6/6        6/6          6/6            6/6   36/36 (100%)
+R4              -           -            -          -            -              -              -
+R5           5/15       14/15        10/15       0/15        13/15          13/15    55/90 (61%)
+R6          12/15        9/15         0/15       9/15         4/15           5/15    39/90 (43%)
+R7            6/6         6/6          6/6        6/6          6/6            6/6   36/36 (100%)
+R9              -           -            -          -            -              -              -
+R10             -           -            -          -            -              -              -
+R11           6/6         6/6          6/6        6/6          6/6            6/6   36/36 (100%)
+R12             -           -            -          -            -              -              -
+R13             -           -            -          -            -              -              -
+R14           4/7         2/3          2/3          -          1/1              -     9/14 (64%)
+
+MAX EPSILON PER RELATION (worst-case slack; ALL = global max, '-' = n/a)
+======================================================================
+relation  429.mcf  450.soplex  471.omnetpp  473.astar  482.sphinx3  483.xalancbmk      ALL               unit
+-------------------------------------------------------------------------------------------------------------
+R1              0           0            0    0.01974            0              0  0.01974      hit-rate frac
+R3              0           0            0          0            0              0        0      hit-rate frac
+R5         0.1716    0.002419      0.01477   0.008308     0.003872       0.004965   0.1716  stall-cyc/tot-cyc
+R6        0.01644     0.04047       0.1423    0.00154      0.02375         0.1407   0.1423  stall-cyc/tot-cyc
+R11             0           0            0          0            0              0        0      hit-rate frac
+R14       535,810      64,119       15,992          -            0              -  535,810         writebacks
 

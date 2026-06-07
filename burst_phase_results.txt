@@ -1,0 +1,62 @@
+Burst data: /scratch/cluster/rao/gem5-configs/output/burst
+Benchmarks: 429.mcf, 450.soplex, 471.omnetpp, 473.astar, 482.sphinx3, 483.xalancbmk
+Interval relations: R5, R6, R14
+
+  429.mcf: parsed 200 windows
+  450.soplex: parsed 200 windows
+  471.omnetpp: parsed 200 windows
+  473.astar: parsed 200 windows
+  482.sphinx3: parsed 200 windows
+  483.xalancbmk: parsed 200 windows
+
+====================================================================================================
+[R5] hit_rate[a] >= hit_rate[b] => stalls[a] <= stalls[b]
+        unit = stall-cyc/tot-cyc
+----------------------------------------------------------------------------------------------------
+benchmark          phase0     phase1     phase2     phase3   within-max   across-200     eval_res  verdict
+----------------------------------------------------------------------------------------------------------
+429.mcf              0.27      0.315     0.3179     0.2693       0.3179       0.5269       0.1716  REDUCED (-0.209)
+450.soplex         0.1411    0.09185     0.1258     0.1187       0.1411       0.1453     0.002419  REDUCED (-0.004265)
+471.omnetpp      0.001236     0.1721     0.1722     0.1472       0.1722       0.1751      0.01477  REDUCED (-0.002877)
+473.astar        0.007255    0.00611   0.006069    0.03992      0.03992      0.03992     0.008308  same
+482.sphinx3       0.06348    0.02238    0.02567    0.08814      0.08814      0.08814     0.003872  same
+483.xalancbmk     0.03055    0.01151    0.09475     0.1259       0.1259       0.1259     0.004965  same
+
+====================================================================================================
+[R6] critical_hit_rate[a] >= critical_hit_rate[b] => stalls[a] <= stalls[b] (tighter than R5)
+        unit = stall-cyc/tot-cyc
+        NOTE: burst data has real lsq0.criticalMissRate, so R6's premise is genuinely
+              distinct from R5 here (not the overall-hit-rate fallback).
+----------------------------------------------------------------------------------------------------
+benchmark          phase0     phase1     phase2     phase3   within-max   across-200     eval_res  verdict
+----------------------------------------------------------------------------------------------------------
+429.mcf            0.3401     0.3787      0.335     0.3861       0.3861       0.4041      0.01644  REDUCED (-0.01803)
+450.soplex         0.1419     0.1257     0.1558     0.1589       0.1589       0.1638      0.04047  REDUCED (-0.004827)
+471.omnetpp      0.001614    0.09873      0.192     0.1196        0.192       0.2348       0.1423  REDUCED (-0.04282)
+473.astar        0.007255    0.00611    0.00903    0.04875      0.04875      0.04875      0.00154  same
+482.sphinx3       0.07799    0.04221    0.06458     0.1318       0.1318       0.1326      0.02375  REDUCED (-0.0008179)
+483.xalancbmk     0.03388    0.01151      0.207      0.266        0.266        0.266       0.1407  same
+
+====================================================================================================
+[R14] store_hit_rate[a] >= store_hit_rate[b] AND evictions[a] >= evictions[b] => writebacks[a] >= writebacks[b]
+        unit = writebacks
+----------------------------------------------------------------------------------------------------
+benchmark          phase0     phase1     phase2     phase3   within-max   across-200     eval_res  verdict
+----------------------------------------------------------------------------------------------------------
+429.mcf             8,166     21,768      3,806      7,748       21,768       31,324      535,810  REDUCED (-9,556)
+450.soplex         12,456      5,735      1,902     29,523       29,523       33,590       64,119  REDUCED (-4,067)
+471.omnetpp             -      1,571      2,731      2,562        2,731        4,139       15,992  REDUCED (-1,408)
+473.astar             686        637        631     10,385       10,385       10,385            -  same
+482.sphinx3         2,514      1,420      2,392      4,476        4,476        4,476            0  same
+483.xalancbmk         452         46        130        473          473        1,213            -  REDUCED (-740)
+
+====================================================================================================
+Reading the table:
+  phase0..3   = max epsilon (worst-case slack) needed WITHIN each 50-interval burst
+  within-max  = max over the 4 phases (slack to make the claim hold inside every burst)
+  across-200  = max epsilon when pairing ALL 200 intervals (current eval_interval behavior)
+  eval_res    = reference value from eval_results.txt (non-burst runs; loose comparison)
+  verdict     = within-max vs across-200 on the SAME burst data (the reduction being tested)
+
+  within-max <= across-200 is mathematically guaranteed (within-phase pairs are a
+  subset of all-200 pairs); a strict reduction means cross-phase pairing was inflating eps.
