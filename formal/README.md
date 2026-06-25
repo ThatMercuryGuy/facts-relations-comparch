@@ -41,6 +41,8 @@ assume an outcome.
 ### What Z3 gets to choose (the symbolic workload)
 - `A[i]` — program-order arrival time of each request.
 - `K[i]` — which stream / hardware thread each request belongs to.
+- `RW[i]` — whether each request is a read (`0`) or a write (`1`), which drives
+  the bus turnaround bubbles.
 - `Dep[i][j]` — a boolean matrix: does request `j` consume request `i`'s result?
 
 ### The physical pipeline bounds (keep the search realistic)
@@ -56,27 +58,44 @@ assume an outcome.
    otherwise it respects program order.
 2. **MSHR gating** — a request cannot present to the channel until an
    outstanding-miss slot frees up: `A'[j] = max(Aeff[j], E[j-W])`.
-3. **Finite-bandwidth channel + bank conflicts** — the channel admits a request
-   every `G` cycles (`G < B`, so requests overlap in flight):
-   `St[j] = max(A'[j], St[j-1] + G)`. A same-bank request still in flight when
-   `j` starts costs a row-cycle penalty: `E[j] = St[j] + B + TRC * conflicts[j]`,
-   where `conflicts[j] = #{ i<j : Bk[i]==Bk[j] && E[i] > St[j] }`.
+3. **Pipelined channel + convex queueing + read/write turnaround** — the channel
+   admits a new request every `G` cycles (`G < B`, so requests **overlap in
+   flight** — this is the latency hiding MLP exists to exploit), plus a `TT`-cycle
+   turnaround bubble whenever the service direction switches read↔write:
+   `St[j] = max(A'[j], St[j-1] + G + TT*switch[j])`. The service cost then grows
+   with how many earlier requests are still in flight when `j` starts —
+   `inflight[j] = #{ i<j : E[i] > St[j] }`, measured in **time** and across **all
+   streams** — under a **convex** curve: the first `C` overlaps are free
+   (bank-level parallelism / bus pipelining), past `C` each costs `PEN_LO`, past
+   the steeper knee `C2` each costs `PEN_HI` more:
+   `E[j] = St[j] + B + PEN_LO*max(0, inflight-C) + PEN_HI*max(0, inflight-C2)`.
 4. **Timeline** — total cycles `T = max(E)`.
 
 ## What makes the search non-trivial
 
-Axiom 3 models a **finite-bandwidth channel** (one admission every `G` cycles)
-with a per-conflict row-cycle penalty (`TRC`) when same-bank requests overlap in
-flight on the modeled timeline (`E[i] > St[j]`). This matters for one structural
-reason: without a bandwidth-limited channel the model is **monotone in `W`** — a
-larger window can never increase completion time — and the discovery query is
-vacuously UNSAT. The finite-bandwidth channel is what makes `T_HighMLP >
-T_LowMLP` even expressible.
+A purely serial, work-conserving channel is **monotone in `W`** — a larger
+window lets requests present no later, so completion times can only fall, and the
+discovery query is vacuously UNSAT. Axiom 3 breaks that monotonicity with the
+genuine physics of a shared, pipelined channel:
+
+- **Pipelining gives MLP a real benefit.** Because admission is every `G < B`
+  cycles, a wider window packs requests tighter against the bandwidth bound and
+  finishes the baseline work earlier — latency hiding.
+- **Convex queueing gives MLP a real cost.** The same packing drives more
+  requests *concurrently in flight* (`inflight`), climbing the convex penalty
+  curve. Crucially `inflight` is derived from the **schedule** (`St`/`E`) and
+  counts across **all streams**, so the cost (a) is not a `W`-indexed constant —
+  the backfire must *emerge* from timing, not be injected — and (b) captures
+  **cross-thread interference**: an aggressive stream floods the channel and
+  delays another stream's critical request.
+- **Read/write turnaround** adds a `TT`-cycle bubble on each direction switch; a
+  tightly-packed wide window eats more of them than a throttled one.
 
 The physics in Axioms 1–4 is **identical for both machines**; only the window
-`W` differs. We make no claim here about whether a counterexample exists, or by
-what mechanism one would arise if it does — that is exactly what Z3 is asked to
-decide, and what we analyze in any witness it returns.
+`W` differs. Whether more MLP helps or hurts is now genuinely workload- and
+regime-dependent — that is exactly what Z3 is asked to decide, and what we
+analyze in any witness it returns. (Notably, under the realistic default config
+below the answer is **UNSAT** — see *Example result*.)
 
 ## Finding the worst case
 
@@ -112,43 +131,59 @@ up.
 
 ## Example result (6 vs 2 MSHRs)
 
+Under the realistic default config (pipelined channel `G=2`, two requests of
+free concurrency `C=2`, convex knee `C2=4`, `PEN_LO=3`, `PEN_HI=5`), the dogma
+**holds**:
+
 ```
 Query: exists workload with  T_HighMLP > T_LowMLP ?
 
-SAT at delta = 1 cycles; maximizing...
-  found larger delta = 3 cycles
-  ...
-  found larger delta = 21 cycles
-  stopped (solver gave up proving a larger delta: canceled); reporting best found.
-
-Conclusion: T_HighMLP = 85  >  T_LowMLP = 64   (delta = 21 cycles)
-More memory-level parallelism made this workload SLOWER.
+UNSAT: no counterexample. Within these bounds, more MLP is never worse -- the dogma holds.
 ```
 
-For this configuration Z3 first returns a workload with a 1-cycle deviation, then
-drives it up to **21 cycles** (6-MSHR core: **85 cycles**, 2-MSHR core: **64**)
-before the final maximality probe hits the 60 s timeout — so 21 is a
-timeout-limited lower bound on the worst case here, not a proved maximum. These
-are the numbers Z3 produced for this run; the engine prints the witness workload
-(arrivals, stream assignment, dependency matrix) so the mechanism behind any
-particular result can be read off and analyzed directly rather than assumed.
+This is the honest outcome: once the channel offers a couple of requests' worth
+of free concurrency (bank-level parallelism / bus pipelining), the latency-hiding
+benefit of the wide window always covers its added contention within these
+bounds. More MLP is never worse here.
+
+The backfire **emerges only in a genuinely starved regime** — when the free
+concurrency budget shrinks toward zero. Sweeping `C` at the default settings:
+
+| `C` (free concurrency) | Result |
+|------------------------|--------|
+| `2` (default)          | **UNSAT** — dogma holds |
+| `1`                    | SAT, proved max `Delta = 6` |
+| `0` (no free parallelism) | SAT, `Delta` climbs further (timeout-limited) |
+
+And under a deliberately pathological channel (`G=6`, `C=0`, `C2=1`, `PEN_LO=8`,
+`PEN_HI=16`) Z3 drives the deviation to a **proved-maximal 72 cycles**
+(`T_HighMLP = 154 > T_LowMLP = 82`). In that witness the printed `nfly`
+(in-flight) row shows the wide machine climbing to 4 concurrent requests while
+the throttled machine stays gated at 1 — so the wide core pays the steep convex
+penalty on requests the narrow core never has in flight. That is the mechanism,
+read directly off the timeline rather than assumed. The engine prints the full
+witness (arrivals, streams, read/write tags, dependency matrix, and both
+machines' `St`/`nfly`/`E` timelines) for exactly this purpose.
 
 ## Configuration
 
 All parameters live in `namespace cfg` at the top of `mlp.cpp`:
 
-| Knob             | Meaning                                   | Default |
-|------------------|-------------------------------------------|---------|
-| `N`              | unroll depth (number of requests)         | 8       |
-| `S`              | streams / hardware threads                | 2       |
-| `B`              | bank service latency per access (cycles)  | 10      |
-| `ROB_SIZE`       | reorder-buffer dependency horizon         | 4       |
-| `MAX_STREAM_MLP` | LSQ: max independent reqs per stream      | 3       |
-| `NB`             | DRAM banks on the shared channel          | 2       |
-| `G`              | channel inter-admission gap (`1/bw`, `<B`)| 2       |
-| `TRC`            | bank-conflict row-cycle penalty (cycles)  | 8       |
-| `W_HIGH`         | MSHRs for `System_HighMLP`                | 6       |
-| `W_LOW`          | MSHRs for `System_LowMLP`                 | 2       |
+| Knob             | Meaning                                        | Default |
+|------------------|------------------------------------------------|---------|
+| `N`              | unroll depth (number of requests)              | 8       |
+| `S`              | streams / hardware threads                     | 2       |
+| `B`              | bank access latency per request (cycles)       | 10      |
+| `ROB_SIZE`       | reorder-buffer dependency horizon              | 4       |
+| `MAX_STREAM_MLP` | LSQ: max independent reqs per stream           | 3       |
+| `G`              | channel inter-admission gap (`1/bw`, `<B`)     | 2       |
+| `TT`             | read/write bus turnaround bubble (cycles)      | 4       |
+| `C`              | free concurrency (overlaps below this cost 0)  | 2       |
+| `C2`             | steeper convex knee (`> C`)                    | 4       |
+| `PEN_LO`         | per-overlap cost in the `[C, C2)` regime       | 3       |
+| `PEN_HI`         | additional per-overlap cost beyond `C2`        | 5       |
+| `W_HIGH`         | MSHRs for `System_HighMLP`                     | 6       |
+| `W_LOW`          | MSHRs for `System_LowMLP`                      | 2       |
 
 To compare different MLP budgets (e.g. 6 vs 1), edit `W_HIGH` / `W_LOW` and
 rebuild.

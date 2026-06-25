@@ -30,10 +30,15 @@ maximization probe, so a larger value lets the worst-case search climb further.
 ## Where to change things
 
 All knobs are in `namespace cfg` at the top of `mlp.cpp`:
-- `N`, `S`, `B` — unroll depth, streams (threads), per-access bus latency.
+- `N`, `S`, `B` — unroll depth, streams (threads), per-request bank latency.
 - `ROB_SIZE`, `MAX_STREAM_MLP` — dependency-matrix pipeline bounds.
-- `PEN` — the per-overlap bus-contention penalty (see critical note below): each
-  independent sibling miss inside the MLP window adds `PEN` cycles of service.
+- `G` — channel inter-admission gap (`1/bandwidth`, `< B`): the channel admits a
+  new request every `G` cycles, so requests overlap in flight (latency hiding).
+- `TT` — read/write bus turnaround bubble added on each direction switch.
+- `C`, `C2`, `PEN_LO`, `PEN_HI` — the **convex** queueing-delay curve (see
+  critical note below): the first `C` concurrently-in-flight requests are free,
+  past `C` each costs `PEN_LO`, past the steeper knee `C2` each costs `PEN_HI`
+  more.
 - `W_HIGH`, `W_LOW` — the MSHR windows of the two machines (the only knob that
   differs between them). Currently `6` vs `2`.
 
@@ -42,36 +47,43 @@ only — nothing else.
 
 ## Critical modeling fact — do not regress this
 
-The bare hardware axioms (causality / MSHR gating / serialization / max) are
-**monotone in `W`**: with a shared workload, more MLP can only lower completion
-times. With them alone the query `T_HighMLP > T_LowMLP` is provably **UNSAT**
-and the engine discovers nothing. This was observed empirically — an early
-version returned UNSAT.
+A purely serial, work-conserving channel is **monotone in `W`**: with a shared
+workload, a larger window lets requests present no later, so completion times can
+only fall, and `T_HighMLP > T_LowMLP` is vacuously **UNSAT**. The model breaks
+that monotonicity with the genuine physics of a shared, **pipelined** channel
+(Axiom 3), folded in as **identical physics for both machines** — only `W`
+differs:
 
-The model is made falsifiable by **shared-resource contention** folded into
-Axiom 3 as a per-overlap penalty:
+- **Pipelined finite bandwidth (the MLP *benefit*).** The channel admits a new
+  request every `G` cycles (`G < B`):
+  `St[j] = max(A'[j], St[j-1] + G + TT*switch[j])`, where `switch[j]` is 1 when
+  the read/write direction changes from `j-1`. Because admission is faster than
+  service, requests **overlap in flight** — a wider window packs them tighter
+  against the `G` bound and finishes baseline work earlier. This is the latency
+  hiding MLP exists to exploit.
+- **Convex queueing delay (the MLP *cost*), measured in TIME.** `inflight[j] =
+  #{ i<j : E[i] > St[j] }` — how many earlier requests are still in service when
+  `j` starts. Service cost is **convex** in it: the first `C` overlaps are free
+  (bank-level parallelism), past `C` each costs `PEN_LO`, past `C2` each costs
+  `PEN_HI` more:
+  `E[j] = St[j] + B + PEN_LO*max(0,inflight-C) + PEN_HI*max(0,inflight-C2)`.
 
-- **Strict FIFO serialization.** `St[j] = max(A'[j], E[j-1])` — a single FIFO
-  bus / DRAM channel: request `j` cannot start service until its predecessor on
-  the bus has finished.
-- **Window-level contention penalty.** `E[j] = St[j] + B + PEN * overlap[j]`,
-  where `overlap[j]` counts the earlier **independent** (no true-dep) sibling
-  misses inside this machine's MLP window `[j-W, j)` that the MSHR file lets be
-  outstanding concurrently with `j`. Each such sibling contends for the shared
-  channel (bank conflicts / arbitration) and adds `PEN` cycles.
+**Why this is honest and not rigged.** The old model added `PEN * overlap` where
+`overlap` counted siblings in the *index* window `[j-W, j)` — a quantity
+**monotone in `W` by construction**, so the wide machine *could not* pay less and
+the "discovery" was essentially an arithmetic identity. The new `inflight` count
+is derived from the **schedule** (`St`/`E`), not from a `W`-indexed window, and
+spans **all streams** — so (a) the backfire must *emerge* from timing rather than
+being injected, and (b) it captures **cross-thread interference** (an aggressive
+stream floods the channel and delays another stream's critical request). The
+read/write turnaround `TT` is a third emergent cost. Do **not** revert to an
+index-window penalty term — that reintroduces the monotone-by-design artifact.
 
-The penalty is **identical physics for both machines**; the only thing that
-differs is the window width `W`. A wider MSHR file exposes more concurrent
-siblings → more contention; the narrow window self-throttles and dodges it. `W`
-enters both through MSHR gating (`A'[j] = max(Aeff[j], E[j-W])`) and through the
-`overlap` window bound.
-
-Key subtlety — **contention must be measured at the MSHR/issue level (the
-window), not at the bus level.** A strict index-order FIFO bus can never let two
-requests overlap *on the bus* (`St[j] >= E[j-1]`), so a bus-level overlap count
-is monotone in `W` and the query goes vacuously **UNSAT**. The `overlap` count
-over `[j-W, j)` is what makes the dogma falsifiable; do not move it to the bus
-timeline.
+Key consequence — **under the realistic default config the query is UNSAT, and
+that is the correct result, not a bug.** Once the channel offers a couple of
+requests of free concurrency (`C=2`), the wide window's latency-hiding benefit
+always covers its contention cost within the bounds. The backfire only emerges
+in a starved regime (small `C`, large `G`/penalties). See Status.
 
 ## Maximizing the deviation (worst case)
 
@@ -95,30 +107,54 @@ prove maximality.
 
 ## Status
 
-FIFO + window-tax model (`B=10`, `PEN=4`), `6 vs 2` MSHRs:
-- First counterexample → SAT, delta `35`.
-- Maximization climbs `35 → 52 → 55 → 56`, and the final probe for `>= 57`
-  returns UNSAT, so **delta = 56 is a proved maximum** — no workload within the
-  bounds makes High-MLP slower by more. This finishes well inside the default
-  60s timeout (a few seconds at `./mlp 30`).
+Pipelined-channel + convex-queueing + R/W-turnaround model, `6 vs 2` MSHRs.
 
-The dogma falsifies: more MLP is worse on the discovered workload. The mechanism
-is the window-level contention tax — the deep MSHR file exposes many independent
-siblings concurrently and pays `PEN` per overlap, while the shallow window
-self-throttles and avoids most of it.
+**Default (realistic) config — `G=2, TT=4, C=2, C2=4, PEN_LO=3, PEN_HI=5`:**
+the query is **UNSAT**. Within the bounds, more MLP is never worse — the
+latency-hiding benefit of the wide window always covers its contention cost once
+the channel offers `C=2` requests of free concurrency. **This is the honest
+result: the dogma holds under realistic physics.**
 
-### Worst-case witness (the proved-maximal workload)
+**The backfire emerges only as the channel is starved.** Sweeping the free-
+concurrency budget `C` (other defaults fixed):
 
-The `delta = 56` counterexample (`T_HighMLP = 170 > T_LowMLP = 114`):
+| `C` | result |
+|-----|--------|
+| `2` (default) | **UNSAT** — dogma holds |
+| `1` | SAT, proved max `Delta = 6` |
+| `0` | SAT, `Delta` climbs (timeout-limited at low budget) |
 
-- **HighMLP (W=6)** never gates on its MSHR file — six slots exceed anything the
-  unroll needs — so it pulls the full window of independent siblings into
-  concurrent flight and pays the `PEN * overlap` tax on each, inflating its
-  per-access service times and the FIFO tail.
-- **LowMLP (W=2)** is throttled by its shallow window: it can only ever count a
-  small `overlap`, so it pays far fewer penalty cycles even though MSHR gating
-  delays some issues.
+**Pathological channel — `G=6, C=0, C2=1, PEN_LO=8, PEN_HI=16`:** SAT, and
+maximization climbs `16 → 19 → 22 → 48 → 72` with the probe for `73` returning
+UNSAT, so **delta = 72 is a proved maximum** (`T_HighMLP = 154 > T_LowMLP = 82`),
+finishing inside `./mlp 30`.
 
-The aggressive machine's larger concurrent-sibling count is exactly what its
-extra MLP buys, and it is precisely what costs it the contention penalty — the
-net is that more MLP makes this workload slower by 56 cycles.
+### Worst-case witness (the pathological-regime proved-maximal workload)
+
+The `delta = 72` counterexample under the starved channel:
+
+- **HighMLP (W=6)** never gates on its MSHR file, so it packs requests against
+  the channel admission bound; its `nfly` (in-flight) row climbs to **4**
+  concurrent requests, each paying the steep convex penalty (here everything past
+  `C2=1` costs `PEN_HI=16`), which stacks into a long tail (`E[7]=154`).
+- **LowMLP (W=2)** is throttled: its `nfly` row stays pinned at **1**, so it
+  almost never climbs the convex curve even though MSHR gating delays some issues
+  (`E[7]=82`).
+
+The aggressive machine's larger *temporal* in-flight count is what its extra MLP
+buys, and — only in this starved regime — it is precisely what costs it the
+convex contention penalty. Under the realistic default config the same mechanism
+exists but the free-concurrency budget absorbs it, so the dogma holds.
+
+The `nfly` row in the timeline dump is the variable to read to see the mechanism:
+it is the temporal in-flight count that drives the convex penalty.
+
+## Future work (deferred, not modeled)
+
+- **FR-FCFS / reordering memory controller** — the canonical academic backfire
+  mechanism; the channel here services in index order (`St` non-decreasing).
+- **Explicit DRAM row-buffer / banks / `tRC`/`tFAW`.**
+- **Out-of-order MSHR completion + same-line miss merging** (gating currently
+  assumes in-order completion via `E[j-W]`).
+- **Start-time backpressure** — queueing currently delays *completion* (`E`),
+  not *admission* (`St`).

@@ -19,20 +19,40 @@
 // ---------------------------------------------------------------------------
 // MODELING NOTE (important):
 //
-//   The bare axioms 1-4 are *monotone* in the MLP budget: with a shared
-//   workload, increasing W can only lower every bus-presentation time, hence
-//   every completion time, hence T. Under the literal axioms alone the claim
-//   "T_HighMLP > T_LowMLP" is therefore UNSAT -- the dogma would hold by
-//   construction and the discovery engine could never find anything.
+//   A purely serial, work-conserving channel is *monotone* in the MLP budget:
+//   a larger window lets requests present no later, so completion times can
+//   only fall. Under such a model "T_HighMLP > T_LowMLP" is UNSAT and the
+//   discovery engine finds nothing. The realistic effects that BREAK that
+//   monotonicity -- and that we model here in Axiom 3 -- are the genuine
+//   physics of a shared, pipelined memory channel:
 //
-//   The single piece of physics the bare axioms omit is SHARED-RESOURCE
-//   CONTENTION: when many requests are concurrently in flight on a single FIFO
-//   bus / DRAM channel, each overlapping access pays a queueing/arbitration
-//   penalty. This is the real reason aggressive MLP can backfire. We fold it
-//   into Axiom 3 as a per-overlap penalty that is identical physics for BOTH
-//   machines; the ONLY thing that differs between the two systems is the MLP
-//   window W. This keeps the model faithful while making the dogma genuinely
-//   FALSIFIABLE, which is the entire purpose of a discovery engine.
+//     (a) PIPELINED FINITE BANDWIDTH. The channel admits a new request every G
+//         cycles (G < B), so requests OVERLAP in flight -- this is the latency
+//         hiding that makes MLP beneficial in the first place. A wider window
+//         packs requests tighter against the G bound and finishes earlier:
+//         the BENEFIT side of MLP.
+//
+//     (b) CONVEX QUEUEING DELAY, measured in TIME not index. We count how many
+//         earlier requests are still in service when j starts (inflight[j]),
+//         and charge a convex cost: the first C overlaps are free (bank-level
+//         parallelism), past C each costs PEN_LO, past C2 each costs PEN_HI
+//         more. A wide window drives more requests concurrently in flight,
+//         climbing the convex curve: the COST side of MLP. Because inflight is
+//         derived from the schedule (St/E), not from a W-indexed window, the
+//         cost is NOT monotone-by-construction -- the backfire must EMERGE.
+//
+//     (c) CROSS-THREAD INTERFERENCE. inflight[j] counts in-flight requests from
+//         ALL streams on the shared channel, so an aggressive (wide-W) stream
+//         floods the channel and delays another stream's critical request.
+//
+//     (d) READ/WRITE TURNAROUND. The bus pays a TT-cycle bubble whenever the
+//         service direction switches (read<->write). A wide window interleaves
+//         R/W tightly and eats the bubbles; a throttled window hides them in
+//         gaps it already had.
+//
+//   The physics is IDENTICAL for both machines; the ONLY thing that differs is
+//   the MLP window W. Whether wide is faster or slower is now genuinely
+//   workload-dependent -- which is what makes the dogma honestly falsifiable.
 //
 // Build:
 //   g++ -std=c++23 mlp.cpp -lz3 -o mlp -Ofast -march=native
@@ -54,15 +74,31 @@ using z3::solver;
 namespace cfg {
     constexpr int N             = 8;   // Unroll depth (number of memory requests).
     constexpr int S             = 2;   // Hardware threads -> number of distinct streams.
-    constexpr int B             = 10;  // Fixed bus latency per access (cycles).
+    constexpr int B             = 10;  // Bank access latency per request (cycles).
     constexpr int ROB_SIZE      = 4;   // Reorder-buffer horizon: deps span <= ROB_SIZE.
     constexpr int MAX_STREAM_MLP= 3;   // LSQ: max concurrently-independent reqs per stream.
-    constexpr int PEN           = 4;   // Per-overlap bus-contention penalty (shared physics).
     constexpr int HORIZON       = 64;  // Upper bound for synthesized arrival times.
+
+    // ---- Pipelined finite-bandwidth channel (shared physics, both machines) --
+    constexpr int G             = 2;   // Channel inter-admission gap (1/bandwidth), G < B.
+    constexpr int TT            = 4;   // Read/write bus turnaround bubble (direction switch).
+
+    // ---- Convex queueing-delay curve (shared physics, both machines) ---------
+    // The first C concurrently in-flight requests are FREE (bank-level
+    // parallelism / bus pipelining doing their job). Past C each costs PEN_LO;
+    // past the steeper knee C2 each ADDITIONALLY costs PEN_HI. This is a convex
+    // cost with a service-rate knee, not a flat per-overlap tax.
+    constexpr int C             = 2;   // Free concurrency (overlaps below this cost nothing).
+    constexpr int C2            = 4;   // Steeper knee: beyond this, contention bites harder.
+    constexpr int PEN_LO        = 3;   // Per-overlap cost in the [C, C2) regime.
+    constexpr int PEN_HI        = 5;   // Additional per-overlap cost beyond C2.
 
     // The single differentiating knob: the MLP / MSHR outstanding-miss window.
     constexpr int W_HIGH        = 6;   // System_HighMLP: 6 MSHRs (aggressive issue).
     constexpr int W_LOW         = 2;   // System_LowMLP : 2 MSHRs (throttled issue).
+
+    static_assert(G < B, "channel must pipeline: admission gap G must be < B");
+    static_assert(C < C2, "convex knee C2 must lie beyond the free regime C");
 }
 
 // ----------------------------------------------------------------------------
@@ -80,11 +116,12 @@ static inline expr b2i(context& c, const expr& b) {
 // system timeline T = max(E).
 // ----------------------------------------------------------------------------
 struct Timeline {
-    std::vector<expr> Aeff;   // effective core arrival (after dependency causality)
-    std::vector<expr> Aprime; // bus-presentation time (after MSHR gating)
-    std::vector<expr> St;     // bus service start  (FIFO serialization)
-    std::vector<expr> E;      // bus service end
-    expr              T;      // system cycles = max over E
+    std::vector<expr> Aeff;     // effective core arrival (after dependency causality)
+    std::vector<expr> Aprime;   // channel-presentation time (after MSHR gating)
+    std::vector<expr> St;       // channel service start (pipelined admission + turnaround)
+    std::vector<expr> Inflight; // # earlier requests still in service when j starts
+    std::vector<expr> E;        // channel service end
+    expr              T;        // system cycles = max over E
     explicit Timeline(context& c) : T(c.int_val(0)) {}
 };
 
@@ -98,10 +135,12 @@ struct Timeline {
 static Timeline build_machine(context& c, solver& sol,
                               const std::string& tag, int W,
                               const std::vector<std::vector<expr>>& Dep,
-                              const std::vector<expr>& A) {
+                              const std::vector<expr>& A,
+                              const std::vector<expr>& RW) {
     using namespace cfg;
     Timeline tl(c);
-    tl.Aeff.reserve(N); tl.Aprime.reserve(N); tl.St.reserve(N); tl.E.reserve(N);
+    tl.Aeff.reserve(N); tl.Aprime.reserve(N); tl.St.reserve(N);
+    tl.Inflight.reserve(N); tl.E.reserve(N);
 
     for (int j = 0; j < N; ++j) {
         // ---- Axiom 1 (Causality) ---------------------------------------------
@@ -128,35 +167,46 @@ static Timeline build_machine(context& c, solver& sol,
             sol.add(Aprime_j == Aeff_j);
         tl.Aprime.push_back(Aprime_j);
 
-        // ---- Axiom 3 (FIFO Serialization + contention) -----------------------
-        // Bus start St[j] = max(A'[j], E[j-1]) : single FIFO channel.
-        // Bus end   E[j]  = St[j] + B + PEN * overlap[j].
-        //
-        // overlap[j] = number of earlier INDEPENDENT (no true-dep) sibling
-        // misses inside this machine's MLP window [j-W, j) that the MSHR file
-        // allows to be outstanding concurrently with j. These siblings contend
-        // for the shared DRAM channel (bank conflicts / arbitration), so each
-        // adds PEN cycles. The penalty is IDENTICAL physics for both machines;
-        // the ONLY thing that differs is the window width W -- a wider MSHR file
-        // exposes more concurrent siblings, hence more contention. This is the
-        // real, faithful mechanism by which aggressive MLP can backfire, and it
-        // is precisely what makes the dogma falsifiable.
-        //
-        // NOTE: a strict index-order FIFO bus can never let two requests overlap
-        // *on the bus* (St[j] >= E[j-1]), so contention must be measured at the
-        // MSHR/issue level (the window), not at the bus level -- otherwise the
-        // model is monotone in W and the query is trivially UNSAT.
-        expr E_prev = (j == 0) ? c.int_val(0) : tl.E[j - 1];
+        // ---- Axiom 3 (pipelined channel + convex queueing + turnaround) ------
+        // Channel start: the bus admits a new request every G cycles (pipelined
+        // finite bandwidth, G < B, so requests OVERLAP in flight -- this is the
+        // latency hiding MLP exists to exploit), plus a TT-cycle turnaround
+        // bubble whenever the service direction switches read<->write:
+        //   St[j] = max( A'[j], St[j-1] + G + TT*switch[j] )
+        // St stays non-decreasing in index, so channel service order == index
+        // order (no reordering modeled here).
         expr St_j = c.int_const(("St_" + tag + "_" + std::to_string(j)).c_str());
-        sol.add(St_j == zmax(Aprime_j, E_prev));
+        if (j == 0) {
+            sol.add(St_j == Aprime_j);
+        } else {
+            expr sw = b2i(c, RW[j] != RW[j - 1]);          // bus direction change
+            expr gap = c.int_val(G) + c.int_val(TT) * sw;
+            sol.add(St_j == zmax(Aprime_j, tl.St[j - 1] + gap));
+        }
         tl.St.push_back(St_j);
 
-        expr overlap = c.int_val(0);
-        int lo = (j - W > 0) ? (j - W) : 0;
-        for (int i = lo; i < j; ++i)
-            overlap = overlap + b2i(c, !Dep[i][j]); // independent sibling in MLP window
+        // Temporal in-flight count: how many EARLIER requests are still being
+        // served when j starts on the channel. This is measured in TIME (via
+        // St/E), not in an index window, and it spans ALL streams -- so it
+        // captures cross-thread interference and depends on W only THROUGH the
+        // schedule. That is what keeps the contention non-monotone-by-design.
+        expr inflight = c.int_val(0);
+        for (int i = 0; i < j; ++i)
+            inflight = inflight + b2i(c, tl.E[i] > St_j);
+        expr Inflight_j = c.int_const(("Inflight_" + tag + "_" + std::to_string(j)).c_str());
+        sol.add(Inflight_j == inflight);
+        tl.Inflight.push_back(Inflight_j);
+
+        // Convex queueing delay: the first C overlaps are FREE (bank-level
+        // parallelism / bus pipelining), past C each costs PEN_LO, and past the
+        // steeper knee C2 each costs PEN_HI more.
+        //   E[j] = St[j] + B + PEN_LO*max(0, inflight-C) + PEN_HI*max(0, inflight-C2)
+        expr over1 = zmax(c.int_val(0), Inflight_j - c.int_val(C));
+        expr over2 = zmax(c.int_val(0), Inflight_j - c.int_val(C2));
         expr E_j = c.int_const(("E_" + tag + "_" + std::to_string(j)).c_str());
-        sol.add(E_j == St_j + c.int_val(B) + c.int_val(PEN) * overlap);
+        sol.add(E_j == St_j + c.int_val(B)
+                       + c.int_val(PEN_LO) * over1
+                       + c.int_val(PEN_HI) * over2);
         tl.E.push_back(E_j);
     }
 
@@ -199,13 +249,15 @@ int main(int argc, char** argv) {
     // -------------------------------------------------------------------------
     // Synthesized symbolic workload (what Z3 gets to choose).
     // -------------------------------------------------------------------------
-    std::vector<expr> A, K;                       // A[i]: arrival,  K[i]: stream id
-    A.reserve(N); K.reserve(N);
+    std::vector<expr> A, K, RW;                   // A: arrival, K: stream id, RW: read/write
+    A.reserve(N); K.reserve(N); RW.reserve(N);
     for (int i = 0; i < N; ++i) {
         A.push_back(c.int_const(("A_" + std::to_string(i)).c_str()));
         K.push_back(c.int_const(("K_" + std::to_string(i)).c_str()));
+        RW.push_back(c.int_const(("RW_" + std::to_string(i)).c_str()));
         sol.add(A[i] >= 0 && A[i] <= HORIZON);    // bounded arrivals
         sol.add(K[i] >= 0 && K[i] <  S);           // S streams (hardware threads)
+        sol.add(RW[i] >= 0 && RW[i] <= 1);         // 0 = read, 1 = write
     }
     // Program order: arrivals are non-decreasing. This realizes the "else
     // A[j] >= A[i]" leg of Axiom 1 for all non-dependent predecessors at once.
@@ -245,8 +297,8 @@ int main(int argc, char** argv) {
     // -------------------------------------------------------------------------
     // Instantiate both machines over the shared workload.
     // -------------------------------------------------------------------------
-    Timeline high = build_machine(c, sol, "High", W_HIGH, Dep, A);
-    Timeline low  = build_machine(c, sol, "Low",  W_LOW,  Dep, A);
+    Timeline high = build_machine(c, sol, "High", W_HIGH, Dep, A, RW);
+    Timeline low  = build_machine(c, sol, "Low",  W_LOW,  Dep, A, RW);
 
     // -------------------------------------------------------------------------
     // The discovery query: does there exist a workload on which MORE MLP is WORSE?
@@ -259,8 +311,9 @@ int main(int argc, char** argv) {
 
     std::cout << "=== MLP dogma discovery engine ===\n"
               << "N=" << N << "  streams(S)=" << S << "  B=" << B
-              << "  ROB=" << ROB_SIZE << "  MAX_STREAM_MLP=" << MAX_STREAM_MLP
-              << "  PEN=" << PEN << "\n"
+              << "  ROB=" << ROB_SIZE << "  MAX_STREAM_MLP=" << MAX_STREAM_MLP << "\n"
+              << "G=" << G << "  TT=" << TT << "  C=" << C << "  C2=" << C2
+              << "  PEN_LO=" << PEN_LO << "  PEN_HI=" << PEN_HI << "\n"
               << "W_HighMLP=" << W_HIGH << "  W_LowMLP=" << W_LOW << "\n"
               << "solver timeout=" << timeout_ms << " ms"
               << (timeout_ms == 0 ? " (none)" : "") << "\n"
@@ -324,12 +377,14 @@ int main(int argc, char** argv) {
     std::cout << "Worst-case workload where High-MLP is SLOWER "
                  "(maximum deviation):\n\n";
 
-    std::cout << "Stream assignment K[i] and arrival A[i]:\n  i :";
+    std::cout << "Stream K[i], arrival A[i], type RW[i] (0=read,1=write):\n  i :";
     for (int i = 0; i < N; ++i) std::cout << std::setw(4) << i;
     std::cout << "\n  K :";
     for (int i = 0; i < N; ++i) std::cout << std::setw(4) << iv(K[i]);
     std::cout << "\n  A :";
     for (int i = 0; i < N; ++i) std::cout << std::setw(4) << iv(A[i]);
+    std::cout << "\n  RW:";
+    for (int i = 0; i < N; ++i) std::cout << std::setw(4) << iv(RW[i]);
     std::cout << "\n\n";
 
     std::cout << "Dependency matrix Dep[i][j]  (1 => j consumes i's result):\n     j:";
@@ -347,10 +402,11 @@ int main(int argc, char** argv) {
 
     auto dump = [&](const char* name, const Timeline& tl) {
         std::cout << name << " timeline:\n";
-        std::cout << "   Aeff :"; for (auto& e : tl.Aeff)   std::cout << std::setw(5) << iv(e); std::cout << "\n";
-        std::cout << "   A'   :"; for (auto& e : tl.Aprime) std::cout << std::setw(5) << iv(e); std::cout << "\n";
-        std::cout << "   St   :"; for (auto& e : tl.St)     std::cout << std::setw(5) << iv(e); std::cout << "\n";
-        std::cout << "   E    :"; for (auto& e : tl.E)      std::cout << std::setw(5) << iv(e); std::cout << "\n";
+        std::cout << "   Aeff :"; for (auto& e : tl.Aeff)     std::cout << std::setw(5) << iv(e); std::cout << "\n";
+        std::cout << "   A'   :"; for (auto& e : tl.Aprime)   std::cout << std::setw(5) << iv(e); std::cout << "\n";
+        std::cout << "   St   :"; for (auto& e : tl.St)       std::cout << std::setw(5) << iv(e); std::cout << "\n";
+        std::cout << "   nfly :"; for (auto& e : tl.Inflight) std::cout << std::setw(5) << iv(e); std::cout << "\n";
+        std::cout << "   E    :"; for (auto& e : tl.E)        std::cout << std::setw(5) << iv(e); std::cout << "\n";
         std::cout << "   T    = " << iv(tl.T) << "\n";
     };
     dump("System_HighMLP", high);
