@@ -51,6 +51,16 @@ All knobs are in `namespace cfg` at the top of `mlp.cpp`:
   typing a magic number.
 - `W_HIGH`, `W_LOW` — the MSHR windows of the two machines (the only knob that
   differs between them). Currently `6` vs `2`.
+- `SPEC` — wrong-path speculation master switch (Strategy B). `1` (default)
+  models a mispredicted branch and its squashed shadow; `0` reduces the model
+  **exactly** to the pre-Strategy-B one (the strict-generalization guard, the
+  analog of `NB=1` for A1). Overridable: `g++ -DCFG_SPEC=0 ...`.
+- `MAX_SHADOW` — cap on the number of wrong-path (squashed) requests, for
+  tractability. Default `4`. The binary prints the cap so it is never a silent
+  truncation of the search space.
+- `RESOLVE_DELAY` — branch resolves at `R = E[BR] + RESOLVE_DELAY`. Default `0`
+  (resolve when the condition-load completes); a small constant models
+  compare+redirect latency.
 
 Changing the comparison (e.g. "6 vs 2 MSHRs") means editing `W_HIGH` / `W_LOW`
 only — nothing else.
@@ -93,6 +103,28 @@ differs:
   request admits later → later `St` → fewer earlier requests still in flight when
   it starts → *lower* `inflight` → smaller penalty. The loop throttles the
   channel toward its sustainable rate, exactly as a real shared bus does.
+- **Wrong-path speculation waste (Strategy B, `SPEC=1`) — an independent
+  anti-MLP mechanism.** A single mispredicted branch `BR` is fetched and the
+  front-end speculatively issues the **shadow** of wrong-path requests after it
+  until the branch **resolves** at `R = E[BR]`, at which point the shadow is
+  **squashed**. The branch index `BR` and the wrong-path set (shared bool tags
+  `Sq[i]`, a contiguous block `{BR+1,…,SE}`) are part of the **shared workload**
+  — both machines see the identical misprediction. But the speculation *depth*
+  — how many shadow requests actually reach the bus before `R` — is **per-machine
+  and emerges from the schedule**: `Live[j] = ¬Sq[j] ∨ (St[j] < R)`. A wide
+  window issues deeper down the wrong path (more `Live` shadow requests), each
+  eating a `G`-cycle admission slot, a possible `TT` bubble, and bank occupancy,
+  all of which delay the **correct-path** tail. The bus admission chain **skips**
+  non-live shadow requests (a request killed in the issue queue before `R` costs
+  the bus nothing — `Cf[j] = Live[j-1] ? St[j-1]+gap : Cf[j-1]`), so a narrow
+  window's late shadow requests never reach the bus and cost it nothing. The MSHR
+  file does **not** skip (allocation is in-order at rename): a shadow request
+  frees its slot at squash `R` only if it never issued, otherwise it holds to `E`
+  (an in-flight DRAM miss must keep its slot to sink the returning fill — you
+  cannot un-send it). `T` counts **correct-path completions only** (`Sq` requests
+  never retire), so the wide window can finish the *real* work later. `SPEC=0`
+  forces every `Sq[i]` false ⇒ every `Live` true ⇒ no skipping ⇒ the model is
+  **identical** to the pre-Strategy-B one.
 
 **Why this is honest and not rigged.** The old model added `PEN * overlap` where
 `overlap` counted siblings in the *index* window `[j-W, j)` — a quantity
@@ -115,6 +147,39 @@ The bank ids are symmetry-broken (first-occurrence order) purely for solver spee
 because all timing reads banks only through the *equality* relation, relabeling
 preserves every quantity, so the symmetry break excludes no physically-distinct
 workload. Do **not** replace the shared tag with a per-machine conflict matrix.
+
+**Label symmetry breaking (solver speed only, model-preserving).** Three workload
+tags are pure interchangeable labels, so the solver would otherwise explore many
+relabelings of the same physical workload. All three are broken with the identical
+first-occurrence canonical form, sound for the same reason as the bank break — each
+is read *only* through an equality/disequality, so relabeling preserves every
+quantity (including `Delta`) and excludes no physically-distinct workload:
+- **Bank ids** (`Bank[i]`, when `NB>1`) — read only via `Bank[i]==Bank[j]`.
+- **Stream ids** (`K[i]`, when `S>1`) — read only via `K[i]==K[j]` (dependency
+  matching and the LSQ per-stream count); no timing reads a stream's absolute id.
+- **Read/write** (`RW[i]`) — read only via the turnaround disequality
+  `RW[j]!=RW[j-1]`, invariant under a global read↔write flip, so `RW[0]` is pinned
+  to `0` (first request is a read WLOG), keeping one representative of each
+  flip-pair. This is the standard Z₂ quotient, not an `NB`-style growth constraint.
+
+These were verified outcome-preserving: at tractable depths where the maximization
+*terminates*, pre- and post-break builds prove the **identical maximum `Delta`**
+(e.g. `N=6/7, NB=3 → Delta=14`; `NB=1 → Delta=5`) and agree on every UNSAT. They
+prune redundant models; do **not** mistake them for modeling changes. (Likewise,
+the `Dep[i][j]` matrix only allocates the structurally-possible entries — strictly
+upper-triangular and within `ROB_SIZE` — instead of allocating all `N²` and pinning
+the impossible ones `false`; model-identical, fewer booleans.)
+
+The **wrong-path shadow is honest for exactly the same reason**: `BR` and `Sq[]`
+are one shared quantity per physical request (both machines mispredict the same
+branch and fetch the same wrong-path stream), so the solver cannot give the wide
+machine a deeper misprediction. Only `Live`/`R`/`St` are per-machine, and the
+depth (`#{i : Sq[i] ∧ Live[i]}`) is decided by the **schedule** (`St[i] < R`),
+which differs between machines only through `W`. Do **not** implement this as "a
+fixed per-request waste tax on the wide machine" or "make the shadow length
+depend on `W` directly" — that reintroduces the monotone-by-construction artifact
+the whole project exists to avoid. The shadow set is shared; only issue-depth is
+per-machine, and only through `St`/`R`.
 
 Key consequence — **the SAT/UNSAT boundary is the per-bank free concurrency
 `C = (B/G)/NB`.** With few banks (`NB ≤ 2`, so `C ≥ 2`) the wide window's latency-
@@ -212,12 +277,42 @@ decides *who collides*, `nfly` counts the same-bank collisions, and `pen` turns 
 into delay that both slows completion (`E`) and back-pressures the next admission
 (`St`).
 
+### Strategy B (wrong-path speculation) — IMPLEMENTED, VERIFICATION PENDING
+
+The `SPEC`/`BR`/`Sq`/`Live`/`Cf`/`Rel`/`R` machinery described in the critical
+modeling note is **implemented in `mlp.cpp`** (default `SPEC=1`) and **compiles
+clean** at both `SPEC=0` and `SPEC=1`. **No SAT/UNSAT result has been measured
+yet** — the binaries have not been run. Do not cite an outcome until the runs
+below land and the witness is hand-verified.
+
+Required runs (TODO §7), in order:
+
+1. **Strict-generalization guard (non-negotiable, first).** Build `-DCFG_SPEC=0`
+   and confirm it reproduces the committed baselines **exactly**:
+   - `g++ -std=c++23 -DCFG_SPEC=0 mlp.cpp -lz3 -o mlp -Ofast -march=native; ./mlp 600`
+     → must be **UNSAT ~199s** (NB=2 default).
+   - `g++ -std=c++23 -DCFG_SPEC=0 -DCFG_NB=3 mlp.cpp -lz3 -o mlp ...; ./mlp 600`
+     → must be **SAT `Delta ≥ 9`**.
+   If either diverges, the generalization is broken — fix before trusting any
+   `SPEC=1` result.
+2. **Headline run.** Build default (`SPEC=1`, `NB=2`, where A1 alone is UNSAT):
+   `g++ -std=c++23 mlp.cpp -lz3 -o mlp -Ofast -march=native; ./mlp 600`.
+   - **SAT** ⇒ speculation waste **independently falsifies the dogma**.
+     **Hand-verify the witness** (mandatory — recompute `St`/`Live`/`E` for the
+     first few requests from the printed equations, as was done for the A1 NB=3
+     witness). Confirm the wide machine has **more** `Live` wrong-path requests
+     before `R` (the printed "wrong-path issue depth") and a later correct-path
+     tail. If the witness does not show that, the SAT is suspect — investigate.
+   - **UNSAT** ⇒ honest negative; record it (strengthens the case for A2).
+3. **Sweep if SAT:** `NB=1`+SPEC and `RESOLVE_DELAY` variants; report whether
+   Δ-max was **proved** or a timeout **lower bound**.
+
+When a result lands, replace this subsection with the measured outcome + the
+hand-verified witness (mirror the A1 NB=3 subsection above), and update
+README.md and the `bank-tag-falsifies-mlp-dogma` memory.
+
 ## Future work (deferred, not modeled)
 
-- **Wrong-path / pipeline-flush waste (Strategy B, planned next)** — a wide window
-  issues deeper down a mispredicted path, consuming channel admission and MSHR
-  slots on requests that are later squashed. An independent, anti-MLP mechanism;
-  in-order, cheap to add on top of the current model.
 - **Row-buffer hit/miss + FR-FCFS reordering (Strategy A2)** — the bank tag now
   models *which bank* a request hits; a `row` tag would model *which row* within
   it (hit vs. activate/precharge). But under the current **in-order** service
@@ -234,3 +329,8 @@ into delay that both slows completion (`E`) and back-pressures the next admissio
 **Done (no longer deferred):** explicit DRAM banks — the scalar locality-blind
 `inflight` is now a per-bank count via the shared `Bank[]` tag (Strategy A1). This
 is what falsified the dogma at `NB≥3`; see Status.
+
+**Implemented, verification pending:** wrong-path / pipeline-flush waste
+(Strategy B) — the `SPEC`/`BR`/`Sq`/`Live`/`Cf`/`Rel` machinery is in `mlp.cpp`
+but the headline run has not been executed. See the Strategy B subsection under
+Status for the required validation runs.

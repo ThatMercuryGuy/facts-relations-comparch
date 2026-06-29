@@ -1,62 +1,32 @@
-// mlp.cpp
-// =============================================================================
-// Bounded Model Checking (BMC) engine for the "more MLP is always better" dogma.
-//
-// We unroll a sequence of N memory requests and evaluate it on TWO parallel
-// mathematical state machines that share the SAME synthesized workload but differ
-// only in their Memory-Level-Parallelism budget (the MSHR / outstanding-miss
-// window W):
-//
-//     System_HighMLP : large W  -> issues aggressively, many requests in flight
-//     System_LowMLP  : small W  -> throttles issue, few requests in flight
-//
-// Z3 autonomously synthesizes a *pure Data Dependency Graph* (the boolean matrix
-// Dep[i][j], stream ids K[i], and program-order arrivals A[i]) such that the
-// High-MLP machine takes STRICTLY MORE total cycles than the Low-MLP machine.
-// No heuristics, no hand-built schedule: the solver discovers the adversarial
-// workload on its own.
-//
-// ---------------------------------------------------------------------------
-// MODELING NOTE (important):
-//
-//   A purely serial, work-conserving channel is *monotone* in the MLP budget:
-//   a larger window lets requests present no later, so completion times can
-//   only fall. Under such a model "T_HighMLP > T_LowMLP" is UNSAT and the
-//   discovery engine finds nothing. The realistic effects that BREAK that
-//   monotonicity -- and that we model here in Axiom 3 -- are the genuine
-//   physics of a shared, pipelined memory channel:
-//
-//     (a) PIPELINED FINITE BANDWIDTH. The channel admits a new request every G
-//         cycles (G < B), so requests OVERLAP in flight -- this is the latency
-//         hiding that makes MLP beneficial in the first place. A wider window
-//         packs requests tighter against the G bound and finishes earlier:
-//         the BENEFIT side of MLP.
-//
-//     (b) CONVEX QUEUEING DELAY, measured in TIME not index. We count how many
-//         earlier requests are still in service when j starts (inflight[j]),
-//         and charge a convex cost: the first C overlaps are free (bank-level
-//         parallelism), past C each costs PEN_LO, past C2 each costs PEN_HI
-//         more. A wide window drives more requests concurrently in flight,
-//         climbing the convex curve: the COST side of MLP. Because inflight is
-//         derived from the schedule (St/E), not from a W-indexed window, the
-//         cost is NOT monotone-by-construction -- the backfire must EMERGE.
-//
-//     (c) CROSS-THREAD INTERFERENCE. inflight[j] counts in-flight requests from
-//         ALL streams on the shared channel, so an aggressive (wide-W) stream
-//         floods the channel and delays another stream's critical request.
-//
-//     (d) READ/WRITE TURNAROUND. The bus pays a TT-cycle bubble whenever the
-//         service direction switches (read<->write). A wide window interleaves
-//         R/W tightly and eats the bubbles; a throttled window hides them in
-//         gaps it already had.
-//
-//   The physics is IDENTICAL for both machines; the ONLY thing that differs is
-//   the MLP window W. Whether wide is faster or slower is now genuinely
-//   workload-dependent -- which is what makes the dogma honestly falsifiable.
-//
-// Build:
-//   g++ -std=c++23 mlp.cpp -lz3 -o mlp -Ofast -march=native
-// =============================================================================
+/*
+ * Bounded Model Checking (BMC) engine for the "more MLP is always better" dogma.
+ *
+ * Unrolls N memory requests on two machines (System_HighMLP, System_LowMLP) that
+ * share the same synthesized workload but differ only in MSHR window W. Z3
+ * autonomously synthesizes a Data Dependency Graph (Dep[i][j], stream ids K[i],
+ * arrivals A[i]) seeking workloads where T_HighMLP > T_LowMLP.
+ *
+ * Key physics that breaks monotonicity:
+ *   (a) Pipelined finite bandwidth: channel admits every G cycles (G < B) → requests
+ *       overlap, wider window packs tighter → faster baseline (MLP benefit).
+ *   (b) Convex queueing delay per bank: inflight[j] = requests still in service when
+ *       j starts on same bank; first C free, then PEN_LO per overlap, then PEN_HI
+ *       steeper. Wider window → more concurrent → climb convex curve (MLP cost).
+ *   (c) Admission backpressure: Pen[j] feeds both E[j] (completion) and St[j+1]
+ *       (next admission). A contended request stalls its own future issue → negative
+ *       feedback loop.
+ *   (d) R/W turnaround: TT-cycle bubble on direction switch. Wide window interleaves
+ *       tightly → burns bubbles; narrow window hides them in gaps.
+ *   (e) Wrong-path speculation (SPEC=1): mispredicted branch BR yields wrong-path set
+ *       (shared). Per-machine issue depth emerges from St[j] < R → wide window issues
+ *       deeper, wasting bus/bank/MSHR on shadow requests that never retire.
+ *
+ * All physics identical for both machines; only W differs → genuinely falsifiable.
+ * Bank tag is shared per request (solver cannot rig contention per-machine).
+ * Inflight derived from St/E (schedule), not W-indexed window → backfire must emerge.
+ *
+ * Build: g++ -std=c++23 mlp.cpp -lz3 -o mlp -Ofast -march=native
+ */
 
 #include <z3++.h>
 #include <vector>
@@ -83,47 +53,39 @@ namespace cfg {
     constexpr int G             = 2;   // Channel inter-admission gap (1/bandwidth), G < B.
     constexpr int TT            = 4;   // Read/write bus turnaround bubble (direction switch).
 
-    // ---- Bank-tag locality proxy (shared physics, both machines) -------------
-    // Instead of carrying raw addresses (modular arithmetic -> nonlinear, bad for
-    // Z3 termination), we carry only the OBSERVABLE EQUIVALENCE CLASS that DRAM
-    // timing actually reads: which bank a request lands in. bank[j] in [0,NB) is
-    // a small finite-domain tag (like K[] and RW[]), and all contention physics
-    // reduces to equality tests bank[i]==bank[j] -- the cheapest thing Z3 does.
-    //
-    // The tag is SHARED across both machines (the same physical request has one
-    // bank, seen identically by High and Low), so the solver cannot rig contention
-    // per-machine -- a free per-machine conflict matrix could, a shared tag cannot.
-    //
-    // NB is overridable at compile time for sweeping:  g++ -DCFG_NB=3 ...
-    // NB=1 collapses to a single bank -> every pair is same-bank -> EXACTLY the
-    // old locality-blind global-inflight model (a strict generalization).
+    /* Bank-tag locality proxy: OBSERVABLE equivalence class (which bank) not raw address.
+     * bank[j] ∈ [0,NB) ↔ contention iff bank[i]==bank[j]. SHARED across machines
+     * (solver cannot rig per-machine). NB=1 recovers old locality-blind model exactly.
+     * Override at compile time: g++ -DCFG_NB=3 ... */
 #ifndef CFG_NB
 #define CFG_NB 2
 #endif
-    constexpr int NB            = CFG_NB; // Number of banks (locality classes).
+    constexpr int NB            = CFG_NB;
 
-    // ---- Convex queueing-delay curve (shared physics, both machines) ---------
-    // Contention is now counted PER BANK: only earlier requests still in service
-    // AND in the same bank as j contend with it. The first C such same-bank
-    // overlaps are FREE, past C each costs PEN_LO, past the steeper knee C2 each
-    // ADDITIONALLY costs PEN_HI. Convex cost with a service-rate knee.
-    //
-    // C is NOT hand-picked. The bandwidth-delay product B/G is the number of
-    // DISTINCT BANKS a pipelined channel keeps busy for free (while one request
-    // occupies a bank for B cycles, the bus admits B/G others -- ideally to OTHER
-    // banks). Spread that free budget over NB banks and the PER-BANK free
-    // concurrency is (B/G)/NB, floored at 1 (a bank always serves >=1 for free).
-    //   - NB=1 -> C = B/G = 5: recovers the old single-channel value exactly.
-    //   - more banks -> lower per-bank pileup: the dogma should hold harder, which
-    //     is physically correct (plenty of banks => no same-bank serialization).
-    constexpr int C             = (B / G) / NB > 0 ? (B / G) / NB : 1; // per-bank free conc.
-    constexpr int C2            = C + 2;  // Steeper knee: just beyond the free regime.
-    constexpr int PEN_LO        = 3;   // Per-overlap cost in the [C, C2) regime.
-    constexpr int PEN_HI        = 5;   // Additional per-overlap cost beyond C2.
+    /* Convex queueing-delay curve (per-bank). First C same-bank overlaps free,
+     * past C each costs PEN_LO, past C2 each costs PEN_HI more. C = (B/G)/NB is
+     * NOT hand-picked: bandwidth-delay product B/G = distinct banks channel keeps
+     * busy for free; divided by NB banks → per-bank free concurrency. NB=1 → C=5
+     * (old model); NB≥3 → C=1 (dogma falsifiable in realistic many-bank regime). */
+    constexpr int C             = (B / G) / NB > 0 ? (B / G) / NB : 1;
+    constexpr int C2            = C + 2;
+    constexpr int PEN_LO        = 3;
+    constexpr int PEN_HI        = 5;
 
-    // The single differentiating knob: the MLP / MSHR outstanding-miss window.
-    constexpr int W_HIGH        = 6;   // System_HighMLP: 6 MSHRs (aggressive issue).
-    constexpr int W_LOW         = 2;   // System_LowMLP : 2 MSHRs (throttled issue).
+    constexpr int W_HIGH        = 6;   // System_HighMLP (aggressive).
+    constexpr int W_LOW         = 2;   // System_LowMLP (throttled).
+
+    /* Wrong-path speculation (Strategy B). Mispredicted branch BR → shadow of wrong-path
+     * requests after it. Shadow is shared workload (both machines); issue depth emerges
+     * from St[j] < R only. Wide window issues deeper → wastes bus/MSHR/bank on shadow,
+     * delays correct-path tail. T counts correct-path completions only.
+     * SPEC=0 → strict-generalization guard, recovers old model exactly. */
+#ifndef CFG_SPEC
+#define CFG_SPEC 1
+#endif
+    constexpr int SPEC          = CFG_SPEC;
+    constexpr int MAX_SHADOW    = 4;   // Shadow-length cap (logged if binds).
+    constexpr int RESOLVE_DELAY = 0;   // R = E[BR] + this; 0 = resolve at condition-load.
 
     static_assert(G < B, "channel must pipeline: admission gap G must be < B");
     static_assert(C < C2, "convex knee C2 must lie beyond the free regime C");
@@ -139,46 +101,51 @@ static inline expr b2i(context& c, const expr& b) {
     return z3::ite(b, c.int_val(1), c.int_val(0));
 }
 
-// ----------------------------------------------------------------------------
-// Result of evaluating one machine: the completion-time array E[] and the
-// system timeline T = max(E).
-// ----------------------------------------------------------------------------
+/* Per-machine timeline: all values derived from the shared workload and per-machine W. */
 struct Timeline {
-    std::vector<expr> Aeff;     // effective core arrival (after dependency causality)
-    std::vector<expr> Aprime;   // channel-presentation time (after MSHR gating)
-    std::vector<expr> St;       // channel service start (pipelined admission + turnaround)
-    std::vector<expr> Inflight; // # earlier requests still in service when j starts
-    std::vector<expr> Pen;      // convex queueing penalty incurred while serving j
-    std::vector<expr> E;        // channel service end
-    expr              T;        // system cycles = max over E
-    explicit Timeline(context& c) : T(c.int_val(0)) {}
+    std::vector<expr> Aeff;     // effective arrival (after dependency causality)
+    std::vector<expr> Aprime;   // channel presentation (after MSHR gating)
+    std::vector<expr> Cf;       // channel-free time (skips un-issued shadow)
+    std::vector<expr> St;       // service start (pipelined admission + turnaround)
+    std::vector<expr> Live;     // occupies bus on this machine? (bool)
+    std::vector<expr> Inflight; // # same-bank earlier requests still in service at St[j]
+    std::vector<expr> Pen;      // convex queueing penalty incurred serving j
+    std::vector<expr> E;        // service end
+    std::vector<expr> Rel;      // MSHR release time (E or R if squashed & never issued)
+    expr              R;        // branch-resolve cycle = E[BR] + RESOLVE_DELAY
+    expr              T;        // system cycles = max over correct-path E
+    explicit Timeline(context& c) : R(c.int_val(0)), T(c.int_val(0)) {}
 };
 
-// ----------------------------------------------------------------------------
-// Build the full timeline of one machine, parameterized by its MLP window W.
-// The synthesized workload (Dep, K, A) is shared across machines; everything
-// computed here is named per-machine so the model is independently extractable.
-// All defining equations are asserted as fresh-const == expr so they show up in
-// the model and can be printed back verbatim.
-// ----------------------------------------------------------------------------
+/* Build per-machine timeline parameterized by MLP window W. Shared workload (Dep, K, A);
+ * per-machine names for independent extraction. All equations asserted as fresh-const == expr
+ * to appear in model output verbatim. */
 static Timeline build_machine(context& c, solver& sol,
                               const std::string& tag, int W,
                               const std::vector<std::vector<expr>>& Dep,
                               const std::vector<expr>& A,
                               const std::vector<expr>& RW,
-                              const std::vector<expr>& Bank) {
+                              const std::vector<expr>& Bank,
+                              const expr& BR,
+                              const std::vector<expr>& Sq) {
     using namespace cfg;
     Timeline tl(c);
-    tl.Aeff.reserve(N); tl.Aprime.reserve(N); tl.St.reserve(N);
-    tl.Inflight.reserve(N); tl.Pen.reserve(N); tl.E.reserve(N);
+    tl.Aeff.reserve(N); tl.Aprime.reserve(N); tl.Cf.reserve(N); tl.St.reserve(N);
+    tl.Live.reserve(N); tl.Inflight.reserve(N); tl.Pen.reserve(N);
+    tl.E.reserve(N); tl.Rel.reserve(N);
+
+    // Per-machine branch-resolve cycle R. It is E[BR] (+RESOLVE_DELAY), but BR is
+    // symbolic and the selection ranges over the WHOLE E array, so we declare R as
+    // a fresh const here, USE it freely in the loop (Live/Cf/Rel reference it), and
+    // pin its defining equation AFTER E is built. No cycle: Sq[i] => i>BR, so every
+    // request that consults R is strictly after the branch, and E[BR] depends only
+    // on the prefix [0,BR] (all of which is correct-path => Live, never consults R).
+    expr R = c.int_const(("R_" + tag).c_str());
+    tl.R = R;
 
     for (int j = 0; j < N; ++j) {
-        // ---- Axiom 1 (Causality) ---------------------------------------------
-        //   if Dep[i][j]:  Aeff[j] >= E[i] + 1   (must wait for producer to retire)
-        //   else        :  Aeff[j] >= A[i]       (program order, enforced globally
-        //                                         via the monotone A constraint)
-        // We pin Aeff[j] to its minimal feasible value so the comparison between
-        // machines is well-defined (no slack for the solver to game).
+        /* Axiom 1 (Causality): Aeff[j] = min feasible = max(A[j], max over Dep[i][j] of E[i]+1).
+         * Pinned minimal so solver has no slack to game the comparison. */
         expr aeff_rhs = A[j];
         for (int i = 0; i < j; ++i)
             aeff_rhs = z3::ite(Dep[i][j], zmax(aeff_rhs, tl.E[i] + 1), aeff_rhs);
@@ -186,85 +153,91 @@ static Timeline build_machine(context& c, solver& sol,
         sol.add(Aeff_j == aeff_rhs);
         tl.Aeff.push_back(Aeff_j);
 
-        // ---- Axiom 2 (MSHR Gating) -------------------------------------------
-        // A request cannot present to the bus until an outstanding-miss slot is
-        // free. With a W-deep MSHR file, request j must wait for the request
-        // W positions earlier to complete:  A'[j] = max(Aeff[j], E[j-W]).
+        /* Axiom 2 (MSHR Gating): A'[j] = max(Aeff[j], Rel[j-W]). MSHR allocation in-order
+         * at rename; fixed j-W gating holds. Speculation changes only Rel, not allocation,
+         * so MSHR does NOT skip un-issued shadow. Shadow that never issued frees at R;
+         * one that launched DRAM txn holds to E (must sink fill). */
         expr Aprime_j = c.int_const(("Aprime_" + tag + "_" + std::to_string(j)).c_str());
         if (j - W >= 0)
-            sol.add(Aprime_j == zmax(Aeff_j, tl.E[j - W]));
+            sol.add(Aprime_j == zmax(Aeff_j, tl.Rel[j - W]));
         else
             sol.add(Aprime_j == Aeff_j);
         tl.Aprime.push_back(Aprime_j);
 
-        // ---- Axiom 3 (pipelined channel + convex queueing + turnaround) ------
-        // Channel start: the bus admits a new request every G cycles (pipelined
-        // finite bandwidth, G < B, so requests OVERLAP in flight -- this is the
-        // latency hiding MLP exists to exploit), plus a TT-cycle turnaround
-        // bubble whenever the service direction switches read<->write, PLUS the
-        // queueing penalty the previous request is still paying:
-        //   St[j] = max( A'[j], St[j-1] + G + TT*switch[j] + Pen[j-1] )
-        //
-        // BACKPRESSURE (the closed loop): the convex contention penalty is not a
-        // dead-end term on E -- it feeds FORWARD into the next admission. A
-        // request that the channel is serving slowly (because it is one of many
-        // in flight) holds the resource longer, so the next request admits later.
-        // Because St is a forward chain, this penalty COMPOUNDS across every later
-        // request: a wide window that floods the channel stalls its OWN future
-        // issue, not just the contended request's completion. This is what makes
-        // "more MLP is worse" physically possible rather than impossible by
-        // construction. St stays non-decreasing in index (no reordering modeled).
+        /* Axiom 3 (pipelined channel + backpressure + turnaround + speculation).
+         * St[j] = max(A'[j], St[j-1] + G + TT*switch[j] + Pen[j-1]).
+         * • Pipelined admission every G cycles → latency hiding (MLP benefit).
+         * • Pen feeds forward → negative feedback loop (wide window stalls own issue).
+         * • TT = turnaround bubble on RW direction switch.
+         * • SPECULATION: request reaches bus only if St[j] < R. Cf[j] skips non-live
+         *   predecessors → W-dependent issue depth emerges from schedule.
+         *   SPEC=0 ⇒ all Live=true ⇒ recovers old model exactly. */
+        expr Cf_j = c.int_const(("Cf_" + tag + "_" + std::to_string(j)).c_str());
         expr St_j = c.int_const(("St_" + tag + "_" + std::to_string(j)).c_str());
         if (j == 0) {
+            sol.add(Cf_j == Aprime_j);
             sol.add(St_j == Aprime_j);
         } else {
             expr sw = b2i(c, RW[j] != RW[j - 1]);          // bus direction change
             expr gap = c.int_val(G) + c.int_val(TT) * sw + tl.Pen[j - 1];
-            sol.add(St_j == zmax(Aprime_j, tl.St[j - 1] + gap));
+            sol.add(Cf_j == z3::ite(tl.Live[j - 1], tl.St[j - 1] + gap, tl.Cf[j - 1]));
+            sol.add(St_j == zmax(Aprime_j, Cf_j));
         }
+        tl.Cf.push_back(Cf_j);
         tl.St.push_back(St_j);
 
-        // Temporal in-flight count: how many EARLIER requests are still being
-        // served when j starts on the channel AND land in the SAME BANK as j.
-        // This is measured in TIME (via St/E), not in an index window, and it
-        // spans ALL streams -- so it captures cross-thread interference and
-        // depends on W only THROUGH the schedule. Filtering by same-bank turns
-        // the old locality-BLIND global pileup into a locality-AWARE one: only
-        // requests that actually collide on the same bank serialize. With NB>1
-        // the solver controls WHERE contention lands -- it can pile the wide
-        // machine's bunched in-flight requests onto one bank while the throttled
-        // machine's time-spread requests to that same bank never overlap. That
-        // is a discrete, schedule-targeted backfire, not a smooth scalar tax.
-        // (NB=1 => Bank[i]==Bank[j] always => recovers the old global count.)
+        /* Bus liveness: Live[j] = ¬Sq[j] ∨ (St[j] < R). Emergent, schedule-derived,
+         * W-dependent. Correct-path always live; shadow live iff admitted before resolve. */
+        expr Live_j = c.bool_const(("Live_" + tag + "_" + std::to_string(j)).c_str());
+        sol.add(Live_j == (!Sq[j] || (St_j < R)));
+        tl.Live.push_back(Live_j);
+
+        /* Temporal in-flight per-bank: count earlier bus-live requests still serving
+         * when j starts AND in same bank. Derived from St/E (schedule), not W-indexed.
+         * Same-bank filter: locality-aware (NB>1) vs global (NB=1). Solver controls
+         * WHERE contention lands → discrete, schedule-targeted backfire. Only Live
+         * requests occupy bank; bus-live shadow runs to completion (cannot un-send). */
         expr inflight = c.int_val(0);
         for (int i = 0; i < j; ++i)
-            inflight = inflight + b2i(c, (tl.E[i] > St_j) && (Bank[i] == Bank[j]));
+            inflight = inflight + b2i(c, tl.Live[i] && (tl.E[i] > St_j) && (Bank[i] == Bank[j]));
         expr Inflight_j = c.int_const(("Inflight_" + tag + "_" + std::to_string(j)).c_str());
         sol.add(Inflight_j == inflight);
         tl.Inflight.push_back(Inflight_j);
 
-        // Convex queueing delay: the first C overlaps are FREE (bank-level
-        // parallelism / bus pipelining), past C each costs PEN_LO, and past the
-        // steeper knee C2 each costs PEN_HI more.
-        //   Pen[j] = PEN_LO*max(0, inflight-C) + PEN_HI*max(0, inflight-C2)
-        // Named so it can both extend E[j] (slower completion) AND back-pressure
-        // the next admission St[j+1] (the closed loop -- see Axiom 3 above).
+        /* Convex queueing delay: Pen[j] = PEN_LO*max(0,inflight-C) + PEN_HI*max(0,inflight-C2).
+         * First C same-bank overlaps free; past C, PEN_LO per overlap; past C2, PEN_HI more.
+         * Feeds both E[j] and St[j+1] → closed-loop backpressure. */
         expr over1 = zmax(c.int_val(0), Inflight_j - c.int_val(C));
         expr over2 = zmax(c.int_val(0), Inflight_j - c.int_val(C2));
         expr Pen_j = c.int_const(("Pen_" + tag + "_" + std::to_string(j)).c_str());
         sol.add(Pen_j == c.int_val(PEN_LO) * over1 + c.int_val(PEN_HI) * over2);
         tl.Pen.push_back(Pen_j);
 
-        //   E[j] = St[j] + B + Pen[j]
+        /* E[j] = St[j] + B + Pen[j]. Service end time. */
         expr E_j = c.int_const(("E_" + tag + "_" + std::to_string(j)).c_str());
         sol.add(E_j == St_j + c.int_val(B) + Pen_j);
         tl.E.push_back(E_j);
+
+        /* MSHR release time: Rel[j] = (Sq[j] ∧ ¬Live[j]) ? R : E[j].
+         * Correct-path: free at E. Wrong-path never issued: free at R (squash).
+         * Wrong-path issued: hold to E (must sink fill, cannot un-send). */
+        expr Rel_j = c.int_const(("Rel_" + tag + "_" + std::to_string(j)).c_str());
+        sol.add(Rel_j == z3::ite(Sq[j] && !Live_j, R, E_j));
+        tl.Rel.push_back(Rel_j);
     }
 
-    // ---- Axiom 4 (Timeline) --------------------------------------------------
-    // System cycles = maximum completion time over the whole window.
-    expr tmax = tl.E[0];
-    for (int j = 1; j < N; ++j) tmax = zmax(tmax, tl.E[j]);
+    /* Pin R = E[BR] + RESOLVE_DELAY (O(N) ite-select on symbolic BR).
+     * Correct-path BR ⇒ E[BR] is prefix-only ⇒ well-defined. */
+    expr r_sel = c.int_val(0);
+    for (int i = 0; i < N; ++i) r_sel = z3::ite(BR == i, tl.E[i], r_sel);
+    sol.add(R == r_sel + c.int_val(RESOLVE_DELAY));
+
+    /* Axiom 4 (Timeline): T = max E[j] over correct-path requests only.
+     * Squashed never retire ⇒ wide window can finish real work later than narrow.
+     * Request 0 always correct-path ⇒ max never degenerate. */
+    expr tmax = c.int_val(0);
+    for (int j = 0; j < N; ++j)
+        tmax = zmax(tmax, z3::ite(Sq[j], c.int_val(0), tl.E[j]));
     expr T = c.int_const(("T_" + tag).c_str());
     sol.add(T == tmax);
     tl.T = T;
@@ -274,10 +247,9 @@ static Timeline build_machine(context& c, solver& sol,
 int main(int argc, char** argv) {
     using namespace cfg;
 
-    // Solver timeout (milliseconds) -- guard against pathological hangs and the
-    // bound on each maximization probe. Overridable as the first CLI argument,
-    // interpreted as SECONDS for convenience:  ./mlp 120  -> 120s timeout.
-    unsigned timeout_ms = 60000u;       // 60s default.
+    /* Solver timeout in milliseconds (guards hangs, each maximization probe).
+     * First CLI arg = SECONDS (default 60, 0 = unlimited). ./mlp 120 → 120s timeout. */
+    unsigned timeout_ms = 60000u;
     if (argc > 1) {
         try {
             size_t pos = 0;
@@ -297,10 +269,9 @@ int main(int argc, char** argv) {
     solver sol(c);
     sol.set("timeout", timeout_ms); // guard against pathological hangs.
 
-    // -------------------------------------------------------------------------
-    // Synthesized symbolic workload (what Z3 gets to choose).
-    // -------------------------------------------------------------------------
-    std::vector<expr> A, K, RW, Bank;             // A: arrival, K: stream id, RW: read/write, Bank: locality class
+    /* Synthesized symbolic workload (Z3-chosen): A (arrival), K (stream id),
+     * RW (read/write), Bank (locality class). */
+    std::vector<expr> A, K, RW, Bank;
     A.reserve(N); K.reserve(N); RW.reserve(N); Bank.reserve(N);
     for (int i = 0; i < N; ++i) {
         A.push_back(c.int_const(("A_" + std::to_string(i)).c_str()));
@@ -312,17 +283,14 @@ int main(int argc, char** argv) {
         sol.add(RW[i] >= 0 && RW[i] <= 1);         // 0 = read, 1 = write
         sol.add(Bank[i] >= 0 && Bank[i] < NB);     // NB banks (locality classes)
     }
-    // Program order: arrivals are non-decreasing. This realizes the "else
-    // A[j] >= A[i]" leg of Axiom 1 for all non-dependent predecessors at once.
+    /* Program order: arrivals non-decreasing. Enforces "A[j] >= A[i]" for all
+     * non-dependent predecessors (Axiom 1 else leg). */
     for (int i = 0; i + 1 < N; ++i)
         sol.add(A[i] <= A[i + 1]);
 
-    // Bank-label symmetry breaking: the bank ids are interchangeable labels, so
-    // without this Z3 wastes the search exploring up to NB! relabelings of the
-    // SAME physical model. Pin bank[0]=0 and force each bank id to be at most one
-    // greater than the max id used so far ("banks appear in first-occurrence
-    // order"). This is the standard finite-domain symmetry break and usually
-    // matters more for runtime than NB itself.
+    /* Bank-label symmetry break: Bank[i] interchangeable labels → prune NB! relabelings
+     * of same physical model. Pin Bank[0]=0, force Bank[i] ≤ max_so_far+1 (first-occurrence
+     * canonical form). Preserves all quantities (read only via equality), model-sound. */
     if (NB > 1) {
         sol.add(Bank[0] == 0);
         expr running_max = Bank[0];
@@ -332,28 +300,65 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Dependency matrix Dep[i][j]: "request j consumes a value produced by i".
-    std::vector<std::vector<expr>> Dep(N, std::vector<expr>(N, c.bool_val(false)));
-    for (int i = 0; i < N; ++i)
-        for (int j = 0; j < N; ++j)
-            Dep[i][j] = c.bool_const(("Dep_" + std::to_string(i) + "_" + std::to_string(j)).c_str());
-
-    // -------------------------------------------------------------------------
-    // Physical pipeline bounds on the dependency matrix.
-    // -------------------------------------------------------------------------
-    for (int i = 0; i < N; ++i) {
-        for (int j = 0; j < N; ++j) {
-            // Strictly upper triangular: a request may only depend on an earlier one.
-            if (i >= j) { sol.add(!Dep[i][j]); continue; }
-            // ROB horizon: dependencies cannot reach beyond the reorder window.
-            if (j - i > ROB_SIZE) { sol.add(!Dep[i][j]); continue; }
-            // Stream matching: a true dependency requires identical stream ids.
-            sol.add(z3::implies(Dep[i][j], K[i] == K[j]));
+    /* Stream-label symmetry break: K[i] read only via equality (Dep matching, LSQ count).
+     * No timing depends on stream's absolute id ⇒ S! relabelings identical, same Delta.
+     * First-occurrence canonical form (sound for same reason as Bank break). */
+    if (S > 1) {
+        sol.add(K[0] == 0);
+        expr running_max = K[0];
+        for (int i = 1; i < N; ++i) {
+            sol.add(K[i] <= running_max + 1);
+            running_max = zmax(running_max, K[i]);
         }
     }
 
-    // LSQ capacity (MAX_STREAM_MLP): within the ROB window, a single stream may
-    // have at most MAX_STREAM_MLP concurrently-INDEPENDENT (no true-dep) requests.
+    /* Read/write-label symmetry break: RW read only via turnaround disequality
+     * RW[j]≠RW[j-1], invariant under global flip ⇒ each workload has flip-twin with
+     * identical Delta. Pin RW[0]=0 (first=read WLOG) for one representative per pair. */
+    sol.add(RW[0] == 0);
+
+    /* Wrong-path speculation workload (Strategy B): mispredicted branch BR +
+     * contiguous shadow Sq[] after it. SHARED across machines (solver cannot rig
+     * per-machine); only per-machine schedule decides issue depth. */
+    expr BR = c.int_const("BR");
+    std::vector<expr> Sq;
+    Sq.reserve(N);
+    for (int i = 0; i < N; ++i)
+        Sq.push_back(c.bool_const(("Sq_" + std::to_string(i)).c_str()));
+
+    if (SPEC) {
+        sol.add(BR >= 0 && BR < N);
+        for (int i = 0; i < N; ++i)
+            sol.add(z3::implies(Sq[i], BR < i));   // Sq[i] ⇒ i > BR
+        /* Contiguity: shadow = block {BR+1,...,SE}. */
+        for (int i = 2; i < N; ++i)
+            sol.add(z3::implies(Sq[i] && (i - 1 > BR), Sq[i - 1]));
+        /* Shadow-length cap (logged, not silent). */
+        expr shadow_len = c.int_val(0);
+        for (int i = 0; i < N; ++i) shadow_len = shadow_len + b2i(c, Sq[i]);
+        sol.add(shadow_len <= c.int_val(MAX_SHADOW));
+    } else {
+        /* SPEC=0: no speculation. Strict-generalization guard → identical to pre-B model. */
+        sol.add(BR == 0);
+        for (int i = 0; i < N; ++i) sol.add(!Sq[i]);
+    }
+
+    /* Dependency matrix Dep[i][j]: request j consumes value from i.
+     * Only structurally-possible entries (upper-triangular + ROB horizon) get boolean
+     * variables; others literal false. Model-identical to full N×N matrix pinned
+     * impossible → false, but halves booleans and drops their constraints. */
+    std::vector<std::vector<expr>> Dep(N, std::vector<expr>(N, c.bool_val(false)));
+    for (int i = 0; i < N; ++i)
+        for (int j = i + 1; j < N && j - i <= ROB_SIZE; ++j)
+            Dep[i][j] = c.bool_const(("Dep_" + std::to_string(i) + "_" + std::to_string(j)).c_str());
+
+    /* Physical pipeline bounds: Dep[i][j] true requires K[i]==K[j] (same stream). */
+    for (int i = 0; i < N; ++i)
+        for (int j = i + 1; j < N && j - i <= ROB_SIZE; ++j)
+            sol.add(z3::implies(Dep[i][j], K[i] == K[j]));
+
+    /* LSQ capacity: single stream ≤ MAX_STREAM_MLP concurrently-independent requests
+     * within ROB window. */
     for (int j = 0; j < N; ++j) {
         expr indep_in_stream = c.int_val(0);
         int lo = (j - ROB_SIZE > 0) ? (j - ROB_SIZE) : 0;
@@ -362,20 +367,15 @@ int main(int argc, char** argv) {
         sol.add(indep_in_stream <= MAX_STREAM_MLP);
     }
 
-    // -------------------------------------------------------------------------
-    // Instantiate both machines over the shared workload.
-    // -------------------------------------------------------------------------
-    Timeline high = build_machine(c, sol, "High", W_HIGH, Dep, A, RW, Bank);
-    Timeline low  = build_machine(c, sol, "Low",  W_LOW,  Dep, A, RW, Bank);
+    /* Instantiate both machines on shared workload. */
+    Timeline high = build_machine(c, sol, "High", W_HIGH, Dep, A, RW, Bank, BR, Sq);
+    Timeline low  = build_machine(c, sol, "Low",  W_LOW,  Dep, A, RW, Bank, BR, Sq);
 
-    // -------------------------------------------------------------------------
-    // The discovery query: does there exist a workload on which MORE MLP is WORSE?
-    //   (standard solver, NOT z3::optimize)
-    // -------------------------------------------------------------------------
-    // Named deviation so we can both query it and, once SAT, maximize it.
+    /* Discovery query: ∃ workload with T_HighMLP > T_LowMLP? (standard solver, not z3::optimize).
+     * Named deviation for subsequent maximization. */
     expr Delta = c.int_const("Delta");
     sol.add(Delta == high.T - low.T);
-    sol.add(Delta > 0);   // i.e. T_HighMLP > T_LowMLP
+    sol.add(Delta > 0);
 
     std::cout << "=== MLP dogma discovery engine ===\n"
               << "N=" << N << "  streams(S)=" << S << "  B=" << B
@@ -383,6 +383,10 @@ int main(int argc, char** argv) {
               << "G=" << G << "  TT=" << TT << "  NB=" << NB
               << "  C=" << C << "  C2=" << C2
               << "  PEN_LO=" << PEN_LO << "  PEN_HI=" << PEN_HI << "\n"
+              << "SPEC=" << SPEC
+              << (SPEC ? "  MAX_SHADOW=" : "  (speculation off -> reduces to base model)")
+              << (SPEC ? std::to_string(MAX_SHADOW) : std::string())
+              << (SPEC ? "  RESOLVE_DELAY=" + std::to_string(RESOLVE_DELAY) : std::string()) << "\n"
               << "W_HighMLP=" << W_HIGH << "  W_LowMLP=" << W_LOW << "\n"
               << "solver timeout=" << timeout_ms << " ms"
               << (timeout_ms == 0 ? " (none)" : "") << "\n"
@@ -401,13 +405,8 @@ int main(int argc, char** argv) {
             break;
     }
 
-    // -------------------------------------------------------------------------
-    // SAT: the dogma is falsifiable. Now find the WORST-CASE workload -- the one
-    // that maximizes the deviation Delta = T_HighMLP - T_LowMLP -- WITHOUT using
-    // z3::optimize. We tighten incrementally on the standard solver: keep the
-    // best model found, assert Delta >= best+1, and re-solve. The first UNSAT
-    // proves the previous Delta was the maximum achievable within these bounds.
-    // -------------------------------------------------------------------------
+    /* Maximize Delta (worst-case workload) via incremental tightening on standard solver.
+     * push(), assert Delta ≥ best+1, check(). SAT → adopt & re-pin; UNSAT → proved max. */
     z3::model m = sol.get_model();
     auto delta_of = [&](const z3::model& mm) {
         return mm.eval(Delta, true).get_numeral_int64();
@@ -416,31 +415,27 @@ int main(int argc, char** argv) {
     std::cout << "SAT at delta = " << best << " cycles; maximizing...\n";
 
     for (;;) {
-        sol.push();                         // checkpoint before the tighter bound
+        sol.push();
         sol.add(Delta >= c.int_val((int)best + 1));
         z3::check_result r = sol.check();
         if (r == z3::sat) {
-            m = sol.get_model();            // strictly better witness
+            m = sol.get_model();
             best = delta_of(m);
             std::cout << "  found larger delta = " << best << " cycles\n";
-            sol.pop();                      // drop the bound; model m is retained
-            sol.add(Delta >= c.int_val((int)best)); // re-pin the floor permanently
+            sol.pop();
+            sol.add(Delta >= c.int_val((int)best));
         } else {
-            sol.pop();                      // no larger delta exists (or timeout)
+            sol.pop();
             if (r == z3::unknown)
-                std::cout << "  stopped (solver gave up proving a larger delta: "
-                          << sol.reason_unknown() << "); reporting best found.\n";
+                std::cout << "  stopped (timeout); reporting best found.\n";
             else
-                std::cout << "  proved maximum: no workload exceeds delta = "
-                          << best << " cycles.\n";
+                std::cout << "  proved maximum: delta = " << best << " cycles.\n";
             break;
         }
     }
     std::cout << "\n";
 
-    // -------------------------------------------------------------------------
-    // Extract and print the maximum-deviation counterexample workload.
-    // -------------------------------------------------------------------------
+    /* Extract and print maximum-deviation counterexample workload. */
     auto iv = [&](const expr& e) { return m.eval(e, true).get_numeral_int64(); };
 
     std::cout << "Worst-case workload where High-MLP is SLOWER "
@@ -456,6 +451,12 @@ int main(int argc, char** argv) {
     for (int i = 0; i < N; ++i) std::cout << std::setw(4) << iv(RW[i]);
     std::cout << "\n  Bk:";
     for (int i = 0; i < N; ++i) std::cout << std::setw(4) << iv(Bank[i]);
+    if (SPEC) {
+        std::cout << "\n  Sq:";
+        for (int i = 0; i < N; ++i)
+            std::cout << std::setw(4) << (m.eval(Sq[i], true).is_true() ? 1 : 0);
+        std::cout << "      (BR = " << iv(BR) << ", shadow = wrong-path requests)";
+    }
     std::cout << "\n\n";
 
     std::cout << "Dependency matrix Dep[i][j]  (1 => j consumes i's result):\n     j:";
@@ -475,10 +476,25 @@ int main(int argc, char** argv) {
         std::cout << name << " timeline:\n";
         std::cout << "   Aeff :"; for (auto& e : tl.Aeff)     std::cout << std::setw(5) << iv(e); std::cout << "\n";
         std::cout << "   A'   :"; for (auto& e : tl.Aprime)   std::cout << std::setw(5) << iv(e); std::cout << "\n";
+        if (SPEC) { std::cout << "   cf   :"; for (auto& e : tl.Cf) std::cout << std::setw(5) << iv(e); std::cout << "\n"; }
         std::cout << "   St   :"; for (auto& e : tl.St)       std::cout << std::setw(5) << iv(e); std::cout << "\n";
+        if (SPEC) {
+            std::cout << "   live :";
+            for (auto& e : tl.Live) std::cout << std::setw(5) << (m.eval(e, true).is_true() ? 1 : 0);
+            std::cout << "\n";
+        }
         std::cout << "   nfly :"; for (auto& e : tl.Inflight) std::cout << std::setw(5) << iv(e); std::cout << "\n";
         std::cout << "   pen  :"; for (auto& e : tl.Pen)      std::cout << std::setw(5) << iv(e); std::cout << "\n";
         std::cout << "   E    :"; for (auto& e : tl.E)        std::cout << std::setw(5) << iv(e); std::cout << "\n";
+        if (SPEC) {
+            /* Wrong-path issue depth: # squashed requests that reached bus on this machine.
+             * W-dependent asymmetry should show here. */
+            int depth = 0;
+            for (int j = 0; j < N; ++j)
+                if (m.eval(Sq[j], true).is_true() && m.eval(tl.Live[j], true).is_true()) ++depth;
+            std::cout << "   R    = " << iv(tl.R)
+                      << "   wrong-path issue depth = " << depth << "\n";
+        }
         std::cout << "   T    = " << iv(tl.T) << "\n";
     };
     dump("System_HighMLP", high);

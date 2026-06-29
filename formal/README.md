@@ -48,6 +48,11 @@ assume an outcome.
   bank?) affects timing, so we carry the small tag directly rather than a raw
   address. It is **shared** across both machines and drives per-bank contention.
 - `Dep[i][j]` — a boolean matrix: does request `j` consume request `i`'s result?
+- `BR`, `Sq[i]` — *(speculation, `SPEC=1` only)* the index of a mispredicted
+  branch and a contiguous **shadow** of wrong-path requests after it. Both are
+  **shared** across the machines — the same misprediction is seen by both — so
+  only the per-machine *issue depth* (how far each window gets down the wrong
+  path before the branch resolves) can differ. See *The hardware axioms*, Axiom 3½.
 
 ### The physical pipeline bounds (keep the search realistic)
 - **Strictly upper-triangular** dependencies — a request can only depend on an
@@ -61,7 +66,10 @@ assume an outcome.
 1. **Causality** — a dependent request waits for its producer to retire;
    otherwise it respects program order.
 2. **MSHR gating** — a request cannot present to the channel until an
-   outstanding-miss slot frees up: `A'[j] = max(Aeff[j], E[j-W])`.
+   outstanding-miss slot frees up: `A'[j] = max(Aeff[j], Rel[j-W])`, where
+   `Rel[j]` is the slot-release time (`= E[j]`, except a squashed wrong-path
+   request under `SPEC=1` that never issued frees early at the squash cycle `R`;
+   with `SPEC=0`, `Rel ≡ E`).
 3. **Pipelined channel + convex queueing + read/write turnaround + backpressure**
    — the channel admits a new request every `G` cycles (`G < B`, so requests
    **overlap in flight** — this is the latency hiding MLP exists to exploit), plus
@@ -83,7 +91,22 @@ assume an outcome.
    product `B/G` is the number of *distinct banks* the channel keeps busy for free,
    so the *per-bank* free concurrency is `C = (B/G)/NB` (floored at 1) — not a
    hand-tuned constant.
-4. **Timeline** — total cycles `T = max(E)`.
+3½. **Wrong-path speculation** *(`SPEC=1` only; `SPEC=0` removes it entirely and
+   reduces the model to exactly Axioms 1–4 below)*. A mispredicted branch `BR` is
+   fetched and the front-end speculatively issues the wrong-path **shadow** `Sq[]`
+   until the branch **resolves** at `R = E[BR]`, then squashes it. The depth each
+   machine reaches is **emergent**, not assigned: `Live[j] = ¬Sq[j] ∨ (St[j] < R)`
+   marks whether request `j` actually occupies the bus on *this* machine. The bus
+   admission chain **skips** non-live shadow requests
+   (`Cf[j] = Live[j-1] ? St[j-1]+gap : Cf[j-1]`, `St[j] = max(A'[j], Cf[j])`), so a
+   shadow request killed before it issues costs the bus nothing; the same-bank
+   `inflight` count and the MSHR release time are likewise masked by `Live`. Total
+   cycles count **correct-path completions only** — squashed requests never retire.
+   A wide window issues deeper down the wrong path, so it can delay the *real* work
+   a narrow window finishes sooner.
+4. **Timeline** — total cycles `T = max(E)` over **correct-path** requests
+   (squashed wrong-path requests excluded; with `SPEC=0` there are none, so this
+   is `max(E)`).
 
 ## What makes the search non-trivial
 
@@ -150,11 +173,14 @@ g++ -std=c++23 mlp.cpp -lz3 -o mlp -Ofast -march=native
 ./mlp 0          # no timeout (run the maximality probe to completion)
 
 g++ -std=c++23 -DCFG_NB=3 mlp.cpp -lz3 -o mlp -Ofast -march=native  # sweep banks
+g++ -std=c++23 -DCFG_SPEC=0 mlp.cpp -lz3 -o mlp -Ofast -march=native # no speculation
 ```
 
 The number of banks `NB` can be overridden at compile time with `-DCFG_NB=k`
 (default `2`) without editing the source — this is the knob that moves the
-SAT/UNSAT boundary (see *Example result*).
+SAT/UNSAT boundary (see *Example result*). Wrong-path speculation can be turned
+off with `-DCFG_SPEC=0`, which reduces the model **exactly** to the bank-only one
+(the strict-generalization guard — see *The speculation experiment*).
 
 The optional first argument sets the solver timeout in **seconds** (default 60,
 `0` = unlimited). It bounds both the discovery query and each maximization probe,
@@ -233,6 +259,24 @@ penalty hit only completion; with backpressure the same config is UNSAT. The
 bank-locality falsification above is therefore *not* a backpressure runaway — it is
 a genuine per-bank contention effect that survives the negative feedback.
 
+### The speculation experiment (Strategy B — implemented, verification pending)
+
+A second, **independent** anti-MLP mechanism is implemented (Axiom 3½, `SPEC=1`,
+the default): wrong-path / pipeline-flush waste. The intended **headline run** is
+`NB=2` — where bank contention *alone* is UNSAT — with speculation on, asking
+whether a wide window that issues deeper down a mispredicted branch (burning bus
+and MSHR slots on requests that never retire) finishes the *real* work later than
+a narrow one. If that flips to **SAT**, speculation waste is a second, independent
+falsifier of the dogma; if it stays **UNSAT**, that is an honest negative.
+
+> **Status: the code compiles clean at both `SPEC=0` and `SPEC=1`, but the runs
+> have not been executed — no SAT/UNSAT outcome is claimed yet.** The required
+> validation, in order: (1) `-DCFG_SPEC=0` must reproduce the bank-only baselines
+> *exactly* (`NB=2` UNSAT, `NB=3` SAT Δ≥9) — the strict-generalization guard;
+> (2) the `SPEC=1`, `NB=2` headline run; (3) hand-verify any SAT witness against
+> the printed equations (the engine prints `Sq`/`BR`, per-machine `live`/`cf`/`R`
+> rows, and each machine's wrong-path issue depth for exactly this purpose).
+
 ## Configuration
 
 All parameters live in `namespace cfg` at the top of `mlp.cpp`:
@@ -253,6 +297,9 @@ All parameters live in `namespace cfg` at the top of `mlp.cpp`:
 | `PEN_HI`         | additional per-overlap cost beyond `C2`        | 5       |
 | `W_HIGH`         | MSHRs for `System_HighMLP`                     | 6       |
 | `W_LOW`          | MSHRs for `System_LowMLP`                      | 2       |
+| `SPEC`           | wrong-path speculation on (`1`) / off (`0`); `-DCFG_SPEC=0` | 1 |
+| `MAX_SHADOW`     | cap on wrong-path shadow length (logged if it binds) | 4 |
+| `RESOLVE_DELAY`  | branch resolves at `R = E[BR] + this`          | 0       |
 
 To compare different MLP budgets (e.g. 6 vs 1), edit `W_HIGH` / `W_LOW` and
 rebuild.
