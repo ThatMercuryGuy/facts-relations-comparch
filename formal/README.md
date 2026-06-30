@@ -78,7 +78,9 @@ analyze the witness.
 
    The penalty `Pen[j]` delays both completion **and** the next admission
    (negative feedback). `C = (B/G)/NB` is derived from the bandwidth-delay product
-   divided over banks.
+   divided over banks. *(`CONTENTION=0` forces `Pen ≡ 0`, dropping this entire
+   per-bank queueing term — the channel reduces to a pure pipelined bus, `E[j] =
+   St[j] + B` and `St[j] = max(A'[j], St[j-1] + G + TT·switch[j])`. See Results.)*
 3½. **Wrong-path speculation** *(`SPEC=1` only).* A mispredicted branch `BR`
    triggers a shared shadow `Sq[]` until resolving at `R = E[BR]`, at which point
    it squashes. Per-machine issue depth is emergent:
@@ -153,13 +155,19 @@ g++ -std=c++23 mlp.cpp -lz3 -o mlp -O3 -march=native
 
 g++ -std=c++23 -DCFG_NB=3   mlp.cpp -lz3 -o mlp -O3 -march=native  # sweep banks
 g++ -std=c++23 -DCFG_SPEC=0 mlp.cpp -lz3 -o mlp -O3 -march=native  # no speculation
+g++ -std=c++23 -DCFG_CONTENTION=0 mlp.cpp -lz3 -o mlp -O3 -march=native  # no bank/row contention
 ```
 
 `-DCFG_NB=k` (default `2`) sets the number of banks without editing the source —
 the knob that moves the SAT/UNSAT boundary. `-DCFG_SPEC=0` turns off wrong-path
-speculation, reducing the model **exactly** to the bank-only one. The optional
-first CLI argument is the solver timeout in **seconds** (default 60, `0` =
-unlimited); it bounds both the discovery query and each maximization probe.
+speculation, reducing the model **exactly** to the bank-only one.
+`-DCFG_CONTENTION=0` forces `Pen ≡ 0`, removing all DRAM bank/row contention
+(banks go inert) so the channel is a pure pipelined bus + MSHR gating +
+speculation — this **isolates wrong-path speculation** as the sole anti-MLP
+mechanism. (Note this is *not* the same as `-DCFG_NB=1`, which stays bank-blind
+but still pays the convex penalty.) The optional first CLI argument is the solver
+timeout in **seconds** (default 60, `0` = unlimited); it bounds both the discovery
+query and each maximization probe.
 
 ## Results (6 vs 2 MSHRs)
 
@@ -227,6 +235,8 @@ independent falsifier that breaks the dogma where bank contention could not.
 | `SPEC=0, NB=2` (guard) | **UNSAT** | reproduces the bank-only baseline exactly ✓ |
 | `SPEC=0, NB=3` (guard) | **SAT, Δ≥9** | reproduces the bank-only baseline exactly ✓ |
 | `SPEC=1, NB=2` (headline) | **SAT, Δ≥8** | lower bound; maximality probe hit the 600 s timeout |
+| `SPEC=0, CONTENTION=0` (guard) | **UNSAT** | no penalty, no spec ⇒ monotone-in-W ✓ |
+| `SPEC=1, CONTENTION=0` (isolation) | **SAT, Δ≥5** | speculation alone, contention off; lower bound (600 s timeout) |
 
 ```
 Query: exists workload with  T_HighMLP > T_LowMLP ?     # SPEC=1, NB=2
@@ -262,6 +272,18 @@ This was validated in the order the project requires: the strict-generalization
 guard first (`SPEC=0` reproduces both bank-only baselines exactly — see the table),
 then the headline run, then hand-verification of the witness.
 
+**Isolating speculation from contention (`CONTENTION=0`).** To confirm the two
+falsifiers are genuinely independent, `-DCFG_CONTENTION=0` forces `Pen ≡ 0`,
+removing all bank/row contention so speculation is the only anti-MLP mechanism
+left. The guard `SPEC=0, CONTENTION=0` is **UNSAT** (no penalty, no speculation ⇒
+the channel is monotone in `W`). Turning speculation back on, `SPEC=1,
+CONTENTION=0` is **SAT, Δ≥5** — and in the witness the `nfly`/`pen` rows are
+identically zero for both machines, so the deviation is purely speculative: the
+wide window (W=6) issues one wrong-path request to the bus before resolve while the
+MSHR-gated narrow window (W=2) issues none, delaying the wide machine's correct-path
+tail (`T = 65` vs `60`). Speculation does **not** need bank contention to break the
+dogma.
+
 ## Configuration
 
 All parameters live in `namespace cfg` at the top of `mlp.cpp`:
@@ -283,6 +305,7 @@ All parameters live in `namespace cfg` at the top of `mlp.cpp`:
 | `W_HIGH`         | MSHRs for `System_HighMLP`                     | 6       |
 | `W_LOW`          | MSHRs for `System_LowMLP`                      | 2       |
 | `SPEC`           | wrong-path speculation on (`1`) / off (`0`); `-DCFG_SPEC=0` | 1 |
+| `CONTENTION`     | DRAM bank/row contention on (`1`) / off (`0`, `Pen≡0`); `-DCFG_CONTENTION=0` | 1 |
 | `MAX_SHADOW`     | cap on wrong-path shadow length (logged if it binds) | 4 |
 | `RESOLVE_DELAY`  | branch resolves at `R = E[BR] + this`          | 0       |
 

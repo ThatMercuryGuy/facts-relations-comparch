@@ -56,6 +56,13 @@ All knobs are in `namespace cfg` at the top of `mlp.cpp`:
   models a mispredicted branch and its squashed shadow; `0` reduces the model
   **exactly** to the pre-Strategy-B one (the strict-generalization guard, the
   analog of `NB=1` for A1). Overridable: `g++ -DCFG_SPEC=0 ...`.
+- `CONTENTION` — DRAM bank/row contention master switch. `1` (default) keeps the
+  full `Bank[]→inflight→Pen` chain (convex per-bank queueing + admission
+  backpressure). `0` forces `Pen≡0`, removing all bank/row contention: the channel
+  reduces to a pure pipelined bus (`G` + `TT`) + MSHR gating + speculation, and
+  `NB` goes inert. This **isolates wrong-path speculation** as the sole anti-MLP
+  mechanism. Overridable: `g++ -DCFG_CONTENTION=0 ...`. **Not** the same as `NB=1`,
+  which stays bank-blind but still pays the convex penalty (`C=B/G`).
 - `MAX_SHADOW` — cap on the number of wrong-path (squashed) requests, for
   tractability. Default `4`. The binary prints the cap so it is never a silent
   truncation of the search space.
@@ -126,6 +133,18 @@ differs:
   never retire), so the wide window can finish the *real* work later. `SPEC=0`
   forces every `Sq[i]` false ⇒ every `Live` true ⇒ no skipping ⇒ the model is
   **identical** to the pre-Strategy-B one.
+
+**Disabling bank/row contention (`CONTENTION=0`) — isolating speculation.** `Pen`
+is the *only* path by which `Bank[]` and the `inflight` count touch any timing
+quantity, so forcing `Pen≡0` cleanly removes the entire bank/row contention
+subsystem: the channel collapses to a pure pipelined bus (`G` + `TT`) + MSHR
+gating + speculation, and `NB` goes inert. Use it to test whether wrong-path
+speculation *alone* falsifies the dogma, with contention removed as a confound.
+`(CONTENTION=0, SPEC=0)` is a new strict-generalization guard — with no penalty
+and no speculation the channel is monotone in `W` (a wider window presents no
+later, completions only fall), so it must be **UNSAT** (verified). This is *not*
+the same as `NB=1`: at `NB=1` the convex penalty is still fully live (bank-blind,
+`C=B/G`); only `CONTENTION=0` zeroes it.
 
 **Why this is honest and not rigged.** The old model added `PEN * overlap` where
 `overlap` counted siblings in the *index* window `[j-W, j)` — a quantity
@@ -330,6 +349,7 @@ first, then the headline run, then hand-verification.
 | `SPEC=0, NB=2` (guard) | **UNSAT** — reproduces bank-only baseline exactly ✓ | `out_spec0_nb2.txt` |
 | `SPEC=0, NB=3` (guard) | **SAT, `Delta ≥ 9`** — reproduces bank-only baseline exactly ✓ | `out_spec0_nb3.txt` |
 | `SPEC=1, NB=2` (headline) | **SAT, `Delta ≥ 8`** (lower bound; maximization hit 600s timeout) | `out_spec1_nb2.txt` |
+| `SPEC=1, CONTENTION=0` (isolation) | **SAT, `Delta ≥ 5`** (lower bound; maximization hit 600s timeout) | `out_nocontention_spec1.txt` |
 
 **Headline witness (`SPEC=1, NB=2`, hand-verified).** Z3 mispredicts a branch at
 `BR=2` with a 4-request shadow `Sq={3,4,5,6}`, resolving at `R = E[2] = 36`
@@ -349,6 +369,18 @@ Those three wasted admissions on the wide machine burn bus slots, a turnaround
 bubble, and bank occupancy, delaying its **correct-path** tail to `T=88` vs the
 narrow window's `T=80`. `Delta = 8` emerges purely from `W`. The
 `St`/`Live`/`Cf`/`Pen` rows were recomputed by hand and match the dump exactly.
+
+**Speculation isolated from contention (`CONTENTION=0, SPEC=1`) — MEASURED, SAT.**
+With `Pen≡0` (no bank/row contention at all), wrong-path speculation *alone* still
+falsifies the dogma: **SAT, `Delta ≥ 5`** (lower bound; maximization hit the 600s
+timeout). Guard first: `CONTENTION=0, SPEC=0` is **UNSAT** (monotone-in-W, as
+expected). In the witness the `nfly`/`pen` rows are identically zero for both
+machines (contention is genuinely off), so the divergence is purely speculative:
+HighMLP (W=6) issues one wrong-path request to the bus (`St[5]=32 < R=33`) while
+LowMLP (W=2) is MSHR-gated and issues zero (all shadow requests reach the bus after
+`R`), delaying High's correct-path tail to `T=65` vs `T=60`. This separates the two
+falsifiers cleanly — speculation does not need bank contention to break the dogma.
+Run output: `out_nocontention_spec1.txt`.
 
 Remaining sweep (deferred, not yet run): `NB=1`+SPEC and `RESOLVE_DELAY` variants;
 report whether Δ-max is **proved** or a timeout **lower bound**.

@@ -53,6 +53,19 @@ namespace cfg {
     constexpr int PEN_LO        = 3;
     constexpr int PEN_HI        = 5;
 
+    /* DRAM bank/row contention master switch. 1 (default) keeps the full
+     * Bank[]→inflight→Pen chain (convex per-bank queueing + admission
+     * backpressure). 0 forces Pen≡0, removing all bank/row contention: the
+     * channel reduces to a pure pipelined bus (G admission gap + TT turnaround)
+     * + MSHR gating + speculation. This isolates wrong-path speculation as the
+     * sole anti-MLP mechanism. NB is then inert. NOTE: NB=1 does NOT do this —
+     * it stays bank-blind but still pays the convex penalty (C=B/G). Override:
+     * g++ -DCFG_CONTENTION=0 ... */
+#ifndef CFG_CONTENTION
+#define CFG_CONTENTION 1
+#endif
+    constexpr int CONTENTION    = CFG_CONTENTION;
+
     constexpr int W_HIGH        = 6;   // System_HighMLP (aggressive).
     constexpr int W_LOW         = 2;   // System_LowMLP (throttled).
 
@@ -154,19 +167,27 @@ static Timeline build_machine(context& c, solver& sol,
         sol.add(Live_j == (!Sq[j] || (St_j < R)));
         tl.Live.push_back(Live_j);
 
-        // Inflight per bank: count earlier live requests still serving when j starts
+        // Inflight per bank: count earlier live requests still serving when j starts.
+        // With contention off there is no bank/row queueing, so the count is inert (0).
         expr inflight = c.int_val(0);
-        for (int i = 0; i < j; ++i)
-            inflight = inflight + b2i(c, tl.Live[i] && (tl.E[i] > St_j) && (Bank[i] == Bank[j]));
+        if (CONTENTION)
+            for (int i = 0; i < j; ++i)
+                inflight = inflight + b2i(c, tl.Live[i] && (tl.E[i] > St_j) && (Bank[i] == Bank[j]));
         expr Inflight_j = c.int_const(("Inflight_" + tag + "_" + std::to_string(j)).c_str());
         sol.add(Inflight_j == inflight);
         tl.Inflight.push_back(Inflight_j);
 
-        // Convex penalty: Pen[j] = PEN_LO*max(0,inflight-C) + PEN_HI*max(0,inflight-C2)
-        expr over1 = zmax(c.int_val(0), Inflight_j - c.int_val(C));
-        expr over2 = zmax(c.int_val(0), Inflight_j - c.int_val(C2));
+        // Convex penalty: Pen[j] = PEN_LO*max(0,inflight-C) + PEN_HI*max(0,inflight-C2).
+        // CONTENTION=0 forces Pen≡0, dropping the bank/row contention chain entirely:
+        // Pen=0 falls out of both E[j] (completion) and the backpressure gap (admission).
         expr Pen_j = c.int_const(("Pen_" + tag + "_" + std::to_string(j)).c_str());
-        sol.add(Pen_j == c.int_val(PEN_LO) * over1 + c.int_val(PEN_HI) * over2);
+        if (CONTENTION) {
+            expr over1 = zmax(c.int_val(0), Inflight_j - c.int_val(C));
+            expr over2 = zmax(c.int_val(0), Inflight_j - c.int_val(C2));
+            sol.add(Pen_j == c.int_val(PEN_LO) * over1 + c.int_val(PEN_HI) * over2);
+        } else {
+            sol.add(Pen_j == c.int_val(0));
+        }
         tl.Pen.push_back(Pen_j);
 
         // Service end: E[j] = St[j] + B + Pen[j]
@@ -317,6 +338,7 @@ int main(int argc, char** argv) {
               << "G=" << G << "  TT=" << TT << "  NB=" << NB
               << "  C=" << C << "  C2=" << C2
               << "  PEN_LO=" << PEN_LO << "  PEN_HI=" << PEN_HI << "\n"
+              << "contention=" << (CONTENTION ? "on" : "off (Pen=0; banks inert)") << "\n"
               << "SPEC=" << SPEC
               << (SPEC ? "  MAX_SHADOW=" : "  (speculation off -> reduces to base model)")
               << (SPEC ? std::to_string(MAX_SHADOW) : std::string())
