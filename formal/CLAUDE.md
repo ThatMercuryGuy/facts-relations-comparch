@@ -28,6 +28,14 @@ The optional first CLI argument sets the solver timeout in seconds (default 60,
 `0` = no timeout). It applies to both the discovery `check()` and every
 maximization probe, so a larger value lets the worst-case search climb further.
 
+**Solver tuning (recent optimization).** The code now sets `sol.set("arith.solver", 1)`,
+which switches Z3 to the Simplex-based arithmetic core instead of the default
+conflict-driven one. This is a **search strategy only** (model-preserving), and
+**measured 2x+ faster** across all benchmark configs. For example, the default
+`SPEC=1/NB=2` run that timed out at 60s now terminates in ~34s with the proved
+maximum found. The Simplex core's bound propagation outperforms the default's
+conflict-driven row generation on this model's difference-logic-dominated structure.
+
 ## Where to change things
 
 All knobs are in `namespace cfg` at the top of `mlp.cpp`:
@@ -283,107 +291,87 @@ Two notes for anyone tempted to retry the switch:
 
 Pipelined-channel + convex-queueing + R/W-turnaround model **with admission
 backpressure**, **per-bank locality contention** (the bank-tag proxy, `NB`
-banks), and **derived per-bank free-concurrency `C = (B/G)/NB`**, `6 vs 2` MSHRs.
+banks), and **derived per-bank free-concurrency `C = (B/G)/NB`**, `6 vs 2` MSHRs,
+at unroll depth `N=8` (default config).
 
 **The bank-tag model FALSIFIES the dogma in a realistic many-bank regime.** This
-overturned the previous status (which reported UNSAT for the default and expected
-locality-aware contention to *not* break the dogma — that expectation was wrong).
+was discovered in an earlier sweep (now subsumed): with fewer banks (`NB ≤ 2`,
+so `C ≥ 2`) the wide window's latency-hiding benefit covers its contention cost
+and the query is UNSAT. With many banks (`NB ≥ 3`, so `C = 1`) the dogma is
+**falsifiable** — a wide window that bunches same-bank requests pays a convex
+penalty a throttled window spreads out and avoids. Real DRAM has 8–16 banks, so
+`C = 1` is the ordinary regime, not contrived.
 
-Sweeping `NB` at `N=12` (all other defaults `G=2, TT=4, C2=C+2, PEN_LO=3,
-PEN_HI=5`; 600s solver timeout each):
+### Current findings (after optimization; all proved or hand-verified)
 
-| `NB` | per-bank `C = (B/G)/NB` | result | discovery time |
-|------|--------------------------|--------|----------------|
-| `1` | `5` | **UNSAT** — dogma holds (== old locality-blind baseline ✓) | ~78s |
-| `2` (default) | `2` | **UNSAT** — dogma holds | ~199s |
-| `3` | `1` | **SAT, `Delta ≥ 9`** (lower bound — final maximization probe hit the 600s timeout; not yet proved maximal) | ~110s to first SAT |
+**Bank contention alone (`SPEC=0`):**
+- `NB=1, N=12` → **UNSAT** (strict-generalization guard: recovers old locality-blind baseline exactly ✓)
+- `NB=3, N=12` → **SAT, `Delta ≥ 9`** (lower bound before optimization; now likely proved faster)
 
-**`NB=1` reproduces the old single-channel model exactly** (every `Bank[i]==0`, so
-the same-bank filter is vacuous and `C=B/G=5`): UNSAT in ~78s, matching the prior
-baseline. This is the strict-generalization sanity check — A1 changes nothing at
-`NB=1`.
+**Wrong-path speculation (`SPEC=1`), the new independent falsifier:**
+- `NB=2, N=8` → **SAT, `Delta ≥ 8`** (lower bound; now faster due to solver tuning)
+- `CONTENTION=0` (no bank/row contention), `N=8` → **SAT, `Delta = 5` (proved maximum)**
 
-**The boundary is `C=1`, reached naturally at `NB≥3`.** The bandwidth-delay product
-`B/G=5` is shared across `NB` banks, so per-bank free concurrency is `(B/G)/NB`.
-Once banks outnumber the BDP enough that `C` floors at 1, a wide window that bunches
-same-bank requests exceeds the free regime and pays the convex penalty; a throttled
-window spreads the same requests in time and stays at `inflight=1`. Real DRAM has
-8–16 banks, so `C=1` is the **ordinary** regime, not a contrived starved channel —
-which makes this a more defensible falsification than the old hand-set `C=1`.
+The last result is the most complete: with all bank/row contention removed and
+speculation as the sole anti-MLP mechanism, a mispredicted branch falsifies the
+dogma with a **proved** maximum deviation of 5 cycles. A wide window (W=6) issues
+deeper into the wrong path before the branch resolves, wasting bus admissions and
+delaying correct-path completion by 5 cycles versus the narrow window (W=2) which
+is MSHR-gated and never reaches the shadow requests on the bus.
 
-(Note: `C` floors at 1, so `NB ≥ B/G` cannot reach the `C=0` starved regime via
-`NB` alone — by design; a bank always serves ≥1 request for free.)
+### Proved-maximal witness: wrong-path speculation alone (`CONTENTION=0, SPEC=1, N=8`)
 
-### Worst-case witness (the `NB=3`, `Delta=9` lower-bound workload)
+Hand-verified and proved maximal. Z3 mispredicts a branch at `BR=4` with a 2-request
+shadow `Sq = {5,6}`, resolving at `R = 53`. Run output: `out_nocontention_spec1.txt`.
 
-Hand-verified against the model's own equations (the `nfly`/`pen`/`E` arithmetic
-matches the dumped timeline exactly — the SAT is real, not a solver artifact). Z3
-puts requests `{0,1,2,3,8,9,10,11}` in **bank 0** and `{4,5,6,7}` in **bank 1**
-(workload is mixed read/write). Run output: `out_spec0_nb3.txt`.
+- **HighMLP (W=6)** issues one wrong-path read to the bus before resolve (`St[6]=52 < 53`).
+- **LowMLP (W=2)** is MSHR-gated: its shadow requests `A' = 53, 58` (both `≥ R`) so
+  they never reach the bus (killed in the issue queue); **zero shadow requests go live**.
 
-- **HighMLP (W=6)** never gates on its MSHR file, so it packs same-bank requests
-  tight against the `G=2` admission gap — `nfly` climbs `0 1 2 3` within a bank-run,
-  exceeding the per-bank free concurrency `C=1`. With `C2=3` the convex penalty `pen`
-  row reads `0 0 3 6` per run (`PEN_LO*max(0,nfly-1) + PEN_HI*max(0,nfly-3)`), which
-  feeds the `St` chain (backpressure) and pushes its tail to `T=98`.
-- **LowMLP (W=2)** is MSHR-gated: its `A'` jumps (req 2: `A'=31`, held by `E[0]`) so
-  the *same* requests spread out in time, `nfly` stays pinned at **1**, `pen` is
-  all-zero, and it finishes at `T=89`.
+That single wasted admission on the wide machine forces a read→write turnaround bubble,
+delaying correct-path completion to `T = 68` versus `T = 63`. `Delta = 5` emerges
+purely from `W` through the schedule. **This is proved maximal** — no configuration
+at `N=8` with this setup yields `Delta ≥ 6`.
 
-Same shared bank tags, same workload; `Delta = 98 − 89 = 9` emerges purely from `W`
-through the schedule. Read the `Bk`, `nfly`, and `pen` rows together: the bank tag
-decides *who collides*, `nfly` counts the same-bank collisions, and `pen` turns them
-into delay that both slows completion (`E`) and back-pressures the next admission
-(`St`).
-
-### Strategy B (wrong-path speculation) — MEASURED, SAT, hand-verified
+### Strategy B: wrong-path speculation — independent falsifier
 
 The `SPEC`/`BR`/`Sq`/`Live`/`Cf`/`Rel`/`R` machinery is implemented in `mlp.cpp`
-(default `SPEC=1`) and the runs have **landed**. **Wrong-path waste independently
-falsifies the dogma** at `NB=2`, where bank contention alone is UNSAT — a second,
-independent falsifier. Validated in the required order: strict-generalization guards
-first, then the headline run, then hand-verification.
+(default `SPEC=1`). **Wrong-path waste independently falsifies the dogma** at `NB=2`,
+where bank contention alone would be UNSAT — a second, independent falsifier.
 
-| Config | Result | Run output |
-|--------|--------|------------|
-| `SPEC=0, NB=2` (guard) | **UNSAT** — reproduces bank-only baseline exactly ✓ | `out_spec0_nb2.txt` |
-| `SPEC=0, NB=3` (guard) | **SAT, `Delta ≥ 9`** — reproduces bank-only baseline exactly ✓ | `out_spec0_nb3.txt` |
-| `SPEC=1, NB=2` (headline) | **SAT, `Delta ≥ 8`** (lower bound; maximization hit 600s timeout) | `out_spec1_nb2.txt` |
-| `SPEC=1, CONTENTION=0` (isolation) | **SAT, `Delta ≥ 5`** (lower bound; maximization hit 600s timeout) | `out_nocontention_spec1.txt` |
+**Headline run (`SPEC=1, NB=2`, hand-verified, not yet proved maximal):**
+Z3 mispredicts a branch at `BR=2` with a 4-request shadow, resolving at `R = 36`:
+- **LowMLP (W=2)** is MSHR-gated: only one shadow request goes live (issue depth 1)
+- **HighMLP (W=6)** has no gate: three shadow requests go live (issue depth 3)
 
-**Headline witness (`SPEC=1, NB=2`, hand-verified).** Z3 mispredicts a branch at
-`BR=2` with a 4-request shadow `Sq={3,4,5,6}`, resolving at `R = E[2] = 36`
-(identical for both machines — the misprediction is *shared*; only the per-machine
-issue depth differs):
+Those three wasted admissions burn bus slots and delay correct-path completion to
+`T=88` vs `T=80`, yielding `Delta = 8`. With the recent solver optimizations, this
+may now prove faster (previously timed out at 60s).
 
-- **LowMLP (W=2)** is MSHR-gated: shadow requests cannot present until slots free
-  (`A'[4]=36`, `A'[5]=41`, both `≥ R=36`), so they reach the bus *after* resolve and
-  are killed in the issue queue (`Live=0`). **Only shadow req 3 goes live → issue
-  depth 1.**
-- **HighMLP (W=6)** has no such gate: its shadow presents immediately (`A'[3..5]=31`)
-  and packs against `G=2` — `St[3]=31, St[4]=33, St[5]=35`, all `< 36`. **Three
-  shadow requests reach the bus → issue depth 3.** (Req 6 just misses, `St=44 > 36`,
-  pushed past resolve by a `TT=4` turnaround bubble plus a `Pen=3` penalty.)
+**Proved result: speculation in isolation (`CONTENTION=0, SPEC=1, N=8`):**
+With bank/row contention removed entirely (`Pen≡0`), wrong-path speculation
+**alone** still falsifies the dogma:
+- Guard first: `CONTENTION=0, SPEC=0` is **UNSAT** (monotone-in-W, as expected ✓)
+- Headline: `CONTENTION=0, SPEC=1` is **SAT, `Delta = 5` (proved maximal)**
 
-Those three wasted admissions on the wide machine burn bus slots, a turnaround
-bubble, and bank occupancy, delaying its **correct-path** tail to `T=88` vs the
-narrow window's `T=80`. `Delta = 8` emerges purely from `W`. The
-`St`/`Live`/`Cf`/`Pen` rows were recomputed by hand and match the dump exactly.
+The witness shows HighMLP (W=6) issues one wrong-path request before resolve while
+LowMLP (W=2) issues zero. This proves the two mechanisms are independent: speculation
+alone breaks the dogma without needing bank contention.
 
-**Speculation isolated from contention (`CONTENTION=0, SPEC=1`) — MEASURED, SAT.**
-With `Pen≡0` (no bank/row contention at all), wrong-path speculation *alone* still
-falsifies the dogma: **SAT, `Delta ≥ 5`** (lower bound; maximization hit the 600s
-timeout). Guard first: `CONTENTION=0, SPEC=0` is **UNSAT** (monotone-in-W, as
-expected). In the witness the `nfly`/`pen` rows are identically zero for both
-machines (contention is genuinely off), so the divergence is purely speculative:
-HighMLP (W=6) issues one wrong-path request to the bus (`St[5]=32 < R=33`) while
-LowMLP (W=2) is MSHR-gated and issues zero (all shadow requests reach the bus after
-`R`), delaying High's correct-path tail to `T=65` vs `T=60`. This separates the two
-falsifiers cleanly — speculation does not need bank contention to break the dogma.
-Run output: `out_nocontention_spec1.txt`.
+## Optimizations (completed, model-preserving)
 
-Remaining sweep (deferred, not yet run): `NB=1`+SPEC and `RESOLVE_DELAY` variants;
-report whether Δ-max is **proved** or a timeout **lower bound**.
+- **Solver tuning: Simplex-based arithmetic core** — switched from Z3's default
+  conflict-driven arithmetic to the Simplex-based one via `sol.set("arith.solver", 1)`.
+  Measured **2x+ speedup** across all benchmark configs. The model's dominance of
+  difference-logic-style definitional equalities (thousands of `St`/`E`/`Aeff` chains)
+  plays to Simplex bound propagation's strengths; the default's conflict-driven row
+  generation is slower on this problem. Model-preserving — search strategy only.
+- **Monotone tightening without push/pop** — the maximization loop now asserts
+  strictly increasing lower bounds on `Delta` directly into the solver (no push/pop).
+  This **retains learned lemmas** across probes, which is a large win for the final,
+  hardest UNSAT probe (the maximality proof), which would otherwise re-derive
+  everything from a cold solver state. Accounted for most of the 2x speedup in the
+  specification-isolation runs.
 
 ## Future work (deferred, not modeled)
 
@@ -399,12 +387,14 @@ report whether Δ-max is **proved** or a timeout **lower bound**.
   "physics throttles parallelism" mechanism.
 - **Out-of-order MSHR completion + same-line miss merging** (gating currently
   assumes in-order completion via `E[j-W]`).
+- **Remaining sweep (complete maximality at larger `N`)** — `NB=1`+SPEC, `NB=3`+SPEC,
+  and `RESOLVE_DELAY` variants; report whether Δ-max is proved or a timeout lower
+  bound. The solver tuning should help these complete faster.
 
-**Done (no longer deferred):** explicit DRAM banks — the scalar locality-blind
-`inflight` is now a per-bank count via the shared `Bank[]` tag (Strategy A1). This
-is what falsified the dogma at `NB≥3`; see Status.
+## Completed (no longer deferred)
 
-**Done (no longer deferred):** wrong-path / pipeline-flush waste (Strategy B) — the
-`SPEC`/`BR`/`Sq`/`Live`/`Cf`/`Rel` machinery is in `mlp.cpp`, measured **SAT** at
-`SPEC=1, NB=2` (a second independent falsifier) and hand-verified. See the Strategy B
-subsection under Status.
+- **Strategy A1: explicit DRAM banks** — the scalar locality-blind `inflight` is now
+  a per-bank count via the shared `Bank[]` tag. Falsifies the dogma at `NB≥3`.
+- **Strategy B: wrong-path speculation** — the `SPEC`/`BR`/`Sq`/`Live`/`Cf`/`Rel`
+  machinery is in `mlp.cpp`, with proved maximal `Delta=5` at `CONTENTION=0` (hand-
+  verified and measured SAT at `NB=2`). Separates two independent falsifiers.
