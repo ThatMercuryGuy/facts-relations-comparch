@@ -1,154 +1,111 @@
-# TODO — Strategy B: validate the wrong-path / speculation model
+# TODO — Surface *non-intuitive, constructible* counterexamples
 
-Implementation brief for the next session. Read `CLAUDE.md` (the "Critical
-modeling fact" wrong-path bullet, and the "Status → Strategy B" subsection)
-before starting.
-
----
-
-## 0. Where we are
-
-Strategy B (**wrong-path / pipeline-flush speculation waste**) is **fully
-implemented in `mlp.cpp`** and compiles clean at both `-DCFG_SPEC=0` and the
-default `-DCFG_SPEC=1`. **It has NOT been run — no SAT/UNSAT result exists yet.**
-Your job is to **run and validate it**, hand-verify any witness, and record the
-outcome in the docs. Do **not** cite an outcome anywhere until the runs below
-land and (if SAT) the witness is hand-checked.
-
-> **Note:** the code may have been through a separate optimization/refactor pass
-> before you got it. Do **not** trust line numbers in any old notes — verify
-> behavior from the equations the binary prints, and confirm the §1 invariants
-> still hold by inspecting the source. The SAT/UNSAT result is what matters, not
-> the internal representation.
->
-> **Optimization pass applied (Z3 solver-speed only, model-preserving):** (1)
-> first-occurrence symmetry breaking now also on stream ids `K[i]` (when `S>1`)
-> and (2) on read/write `RW[i]` (pin `RW[0]=0`, the global read↔write flip's Z₂
-> quotient); (3) the `Dep[i][j]` matrix allocates only structurally-possible
-> entries instead of all `N²` pinned `false`. All three are pure label-symmetry /
-> dead-variable removals — read CLAUDE.md's "Label symmetry breaking" note for why
-> they preserve `Delta`. Verified: pre/post builds prove the **identical maximum
-> `Delta`** wherever maximization terminates (`N=6/7` `NB=3`→14, `NB=1`→5) and
-> agree on UNSAT. They do **not** touch any §1 invariant.
-
-**What the mechanism does (recap):** a shared mispredicted branch `BR` and a
-contiguous wrong-path shadow `Sq[]` are part of the synthesized workload (both
-machines see the *identical* misprediction). Each machine's speculation *depth*
-— how many shadow requests reach the bus before the branch resolves at
-`R = E[BR]` — **emerges** from its own schedule via `Live[j] = ¬Sq[j] ∨ (St[j] <
-R)`. The bus admission chain skips non-live shadow; the MSHR file frees a shadow
-slot at `R` only if it never issued (else at `E`); and `T` counts correct-path
-completions only. A wide window issues deeper down the wrong path and can finish
-the *real* work later — an anti-MLP mechanism independent of bank contention.
-
-**The headline question:** at `NB=2` (where bank contention A1 *alone* is UNSAT),
-does turning speculation on flip the query to **SAT**? If yes, speculation waste
-is a second, independent falsifier of the dogma.
+Read `CLAUDE.md` (the "Critical modeling fact" section) and the README "Results"
+section before starting. Strategy B (wrong-path speculation) is **done, measured,
+and documented** — both falsifiers (bank contention at `NB≥3`, speculation at
+`NB=2` / `CONTENTION=0`) have landed and are hand-verified.
 
 ---
 
-## 1. Invariants that must still hold (verify before trusting any result)
+## 0. The new goal (this changes the search objective)
 
-These are the honesty/correctness properties of the model. Confirm them by
-reading the source and the printed witness — an optimizer must not have broken
-any of them:
+The project has shifted from *"can Z3 falsify the dogma?"* (answered: yes, two
+independent ways) to a sharper aim:
 
-- `Sq[]` and `BR` are **shared** across both machines; only `Live`/`R`/`St`/`Cf`/
-  `Rel` are per-machine. Never a per-machine shadow set or shadow length.
-- Speculation depth **emerges** from `St[i] < R` — never written as a function of
-  `W`. (Same discipline as A1's schedule-derived contention.)
-- Bus chain **skips** not-bus-live wrong-path requests; the MSHR file does **not**
-  skip (in-order allocation, only the release time changes). Different resources,
-  handled differently.
-- `Inflight` is masked by `Live`; `T` excludes `Sq` requests.
-- Every modeled quantity is a named const asserted `== rhs` (prints in the
-  witness; no solver slack). Model stays deterministic.
-- `SPEC=0` must force every `Sq[i]` false ⇒ every `Live` true ⇒ no skipping ⇒
-  the model is **identical** to the bank-only one.
+> **Find a workload Z3 synthesizes that maps onto a buildable real-life scenario
+> AND that a human architect would not have intuitively predicted.**
 
----
+This is a different objective from **Δ-max**. The largest-Δ witness is not
+necessarily the most interesting one. Concretely:
 
-## 2. Validation plan (do every step in order — this is how we trust the result)
+- The current `SPEC=1, CONTENTION=0` witness (wrong-path read steals a bus slot and
+  forces a R→W turnaround) is **real but too intuitive** — "a doomed load steals
+  bus bandwidth" is a first-order answer any architect would give. Good existence
+  proof, weak as a *surprise*.
+- A *non-intuitive* witness has a **causal chain of ≥3 hops** where the cause and
+  the victim are **decoupled** — the harm doesn't come from the obvious local cost.
+  Z3 is uniquely good at finding these because it doesn't reason locally.
 
-Build line (defaults shown; vary `-DCFG_SPEC` / `-DCFG_NB`):
-```
-g++ -std=c++23 mlp.cpp -lz3 -o mlp -O3 -march=native
-```
+There is a tension to manage explicitly:
 
-### Step 1 — Strict-generalization guard (NON-NEGOTIABLE, do first)
-
-`SPEC=0` must reproduce the committed bank-only baselines **exactly**. If either
-diverges, the generalization is broken — fix before trusting any `SPEC=1` result.
-
-```
-g++ -std=c++23 -DCFG_SPEC=0          mlp.cpp -lz3 -o mlp -O3 -march=native
-./mlp 600     # NB=2 default  -> MUST be UNSAT (~199s)
-
-g++ -std=c++23 -DCFG_SPEC=0 -DCFG_NB=3 mlp.cpp -lz3 -o mlp -O3 -march=native
-./mlp 600     # NB=3          -> MUST be SAT, Delta >= 9
-```
-
-(If iterating is slow, drop to `N=8` to smoke-test, then re-confirm at the
-committed `N=12`.)
-
-### Step 2 — Headline run (the experiment)
-
-```
-g++ -std=c++23 mlp.cpp -lz3 -o mlp -O3 -march=native   # SPEC=1, NB=2
-./mlp 600
-```
-
-- **SAT** ⇒ speculation waste independently falsifies the dogma.
-  **Hand-verify the witness (MANDATORY):** recompute `St`/`Live`/`E` for the
-  first few requests from the model's own printed equations (as was done for the
-  A1 NB=3 witness — see CLAUDE.md "Status"). Confirm the mechanism:
-  - the wide machine's printed **wrong-path issue depth** is **greater** than the
-    narrow machine's, and
-  - its correct-path tail (`T`) is **later**.
-  If the witness does **not** show that, the SAT may be coming from a different
-  (possibly buggy) channel — investigate before reporting. The dump already
-  prints `Sq`/`BR`, per-machine `cf`/`live`/`R` rows, and the issue depth for
-  exactly this purpose.
-- **UNSAT** ⇒ an honest negative: speculation waste alone, in-order, does not
-  break the dogma at `NB=2`. Record it; it strengthens the case for A2.
-
-### Step 3 — Sweep (only if Step 2 is SAT)
-
-Characterize where the backfire lives:
-- `NB=1` + SPEC (does it survive with no bank contention at all?).
-- `RESOLVE_DELAY` variations (models compare+redirect latency).
-- Report whether the maximized `Delta` was **proved maximal** (final probe
-  returned UNSAT) or is a timeout **lower bound** (be explicit, as with A1).
+- **Too constructible → intuitive** (current R→W story).
+- **Too clever → not reproducible on hardware** (hinges on a 1-cycle knife-edge
+  margin and a specific tag assignment that only Z3 can set up).
+- **Sweet spot → a *structural* pattern** (not a timing accident) that survives
+  perturbation and that you can describe as a real access pattern.
 
 ---
 
-## 3. Tractability notes
+## 1. Next step: add a robustness filter to the search (highest priority)
 
-Speculation adds the integer `BR`, `N` bools (`Sq`), and per-machine `Cf`/`Live`/
-`Rel` consts; the `BR`-indexed `R` select is O(N) ite per machine and the
-`Live`-masked inflight stays O(N²) with an extra conjunct. Expect solve times in
-the same order as A1 (tens of seconds to a few minutes), possibly longer. If a
-run hangs:
+Δ-max chases knife-edge timing artifacts (the current witness hinges on a
+*one-cycle* margin, `St[6]=52 < R=53`). Those are real physics but **not
+constructible** — you cannot hand a colleague a C program that reliably reproduces
+a cycle-exact margin. Robust witnesses are both more surprising (structural, not
+luck) and more constructible.
 
-1. Confirm `MAX_SHADOW` (default 4) is in effect — the banner prints it. It caps
-   the shadow length; relax only if an UNSAT looks suspiciously easy, and `log`
-   the change.
-2. Drop to `N=8` to iterate, then re-confirm at `N=12`.
-3. Give the final maximization probe room with a generous CLI timeout
-   (`./mlp 600` or more); report UNKNOWN honestly if it times out.
+**Change the search objective** from "maximize Δ" to "find a witness whose
+`T_HighMLP > T_LowMLP` ordering *survives perturbation*":
+
+- After finding a SAT witness, re-check that the ordering still holds under a
+  ±k-cycle perturbation of the arrival vector `A[]` (∀ over a small neighborhood,
+  or just re-solve pinning each `A[i]` to witness±k and confirm still SAT/ordered).
+- Adopt a witness only if the ordering is robust; discard cycle-exact flukes.
+- This filters out timing knife-edges and surfaces *structural* counterexamples.
+
+Implement as a post-discovery pass in the maximization loop (do **not** replace the
+existing Δ-max loop — add a robustness gate on top, or a second search mode).
+
+## 2. Mine the regimes where ≥3-hop chains live
+
+The intuitive witnesses come from 2-hop chains (wrong-path req → bus slot → tail).
+The surprising ones live in the **feedback and cross-thread** regimes:
+
+- **Backpressure non-monotonicity** (`CONTENTION=1`). The closed loop already does
+  counterintuitive things (the old completion-only `Δ=72` config became UNSAT once
+  `Pen` fed admission). Hunt for a witness where the wide window is slower
+  *specifically because* its contention penalty fed back into admission and
+  **reordered which requests collide** — a chain "more MLP → earlier admission →
+  higher inflight → penalty → later admission of a *different* request" that a human
+  reasoning "more overlap = faster" would not trace.
+- **Cross-thread interference** (`S=2`, already available). `inflight` spans all
+  streams. Find a witness where the wide window's aggression on **stream A** floods
+  a bank and delays **stream B's** critical request — the victim is not the
+  speculating thread. Maps directly to real SMT / multicore bandwidth contention and
+  is genuinely non-obvious.
+- **Phase-dependent "helpful-looking" request.** A request that looks like it should
+  help (arrives early, would prefetch) but lands at the wrong schedule phase and is
+  *good for the narrow machine, bad for the wide one* — purely through timing phase.
+
+## 3. For each candidate witness — construct the real scenario
+
+A witness only counts for the new goal if you can **name the hardware access
+pattern**. For each survivor of §1:
+
+- Tell the story in architectural terms: pointer-chase colliding with a streaming
+  write? an SMT co-runner? a specific branch+load idiom?
+- If you **cannot** tell a buildable hardware story, **discard it regardless of Δ.**
+- Cite the relevant prior art so the delta is honest:
+  - Mutlu, Kim, Armstrong, Patt — wrong-path memory references (WMPI 2004 /
+    IEEE TC 2005). The wrong-path-contention effect is known; our novelty is the
+    monotonicity-in-`W` framing + the SMT *proof*.
+  - Manne, Klauser, Grunwald — "Pipeline Gating: Speculation Control for Energy
+    Reduction" (ISCA 1998) + Grunwald et al. "Confidence Estimation for Speculation
+    Control" (ISCA 1998). Confidence-throttled speculation exists *for energy*; the
+    open angle is **confidence-gated speculative MLP** (cap speculative MSHR/bus use
+    while leaving correct-path MLP wide) — protecting correct-path *bandwidth*, not
+    energy. Verify these against the PDFs before leaning on the distinction.
 
 ---
 
-## 4. After a result lands — documentation (mirror the A1 write-up)
+## Open items deferred from the modeling roadmap (not the current focus)
 
-- **CLAUDE.md:** replace the "Status → Strategy B (IMPLEMENTED, VERIFICATION
-  PENDING)" subsection with the measured outcome + the hand-verified witness
-  (mirror the A1 NB=3 subsection). Update the "Done / Implemented" footer line.
-- **README.md:** replace the "speculation experiment (implemented, verification
-  pending)" box with the measured result and a short witness read-out.
-- **Memory** (`bank-tag-falsifies-mlp-dogma`): update the Strategy B paragraph
-  (currently "IMPLEMENTED, NOT YET RUN") with the outcome.
-- **This file:** once B is validated and documented, the next roadmap item is
-  **C** (tFAW/tRRD activate window — rides on the existing `Bank` tags) or **A2**
-  (row-buffer + FR-FCFS reordering — the expensive one; row tags do nothing until
-  service order is W-dependent). B is independent of both and does not block them.
+- **Strategy A2** — row-buffer hit/miss + FR-FCFS reordering. Row tag does nothing
+  until service order is `W`-dependent (symbolic permutation — the expensive piece).
+  Add the row tag and reordering *together*.
+- **Strategy C** — `tFAW`/`tRRD` activate window (≤4 activations/window); rides on
+  the existing `Bank` tags. A second independent "physics throttles parallelism."
+- **Remaining SPEC sweep** — `NB=1 + SPEC`, `RESOLVE_DELAY` variants; report whether
+  each Δ is **proved maximal** or a timeout **lower bound**.
+- **Re-confirm the `N=8` proved-max at `N=12`** for `SPEC=1, CONTENTION=0` — the
+  proof is currently only for `N=8` (max-Δ is non-decreasing in `N`).

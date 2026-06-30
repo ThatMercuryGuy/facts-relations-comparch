@@ -23,7 +23,7 @@ using z3::solver;
 // Tunable parameters of the unrolled model.
 // ----------------------------------------------------------------------------
 namespace cfg {
-    constexpr int N             = 12;   // Unroll depth (number of memory requests).
+    constexpr int N             = 8;   // Unroll depth (number of memory requests).
     constexpr int S             = 2;   // Hardware threads -> number of distinct streams.
     constexpr int B             = 10;  // Bank access latency per request (cycles).
     constexpr int ROB_SIZE      = 4;   // Reorder-buffer horizon: deps span <= ROB_SIZE.

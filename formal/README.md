@@ -236,7 +236,7 @@ independent falsifier that breaks the dogma where bank contention could not.
 | `SPEC=0, NB=3` (guard) | **SAT, Δ≥9** | reproduces the bank-only baseline exactly ✓ |
 | `SPEC=1, NB=2` (headline) | **SAT, Δ≥8** | lower bound; maximality probe hit the 600 s timeout |
 | `SPEC=0, CONTENTION=0` (guard) | **UNSAT** | no penalty, no spec ⇒ monotone-in-W ✓ |
-| `SPEC=1, CONTENTION=0` (isolation) | **SAT, Δ≥5** | speculation alone, contention off; lower bound (600 s timeout) |
+| `SPEC=1, CONTENTION=0` (isolation) | **SAT, Δ=5** | speculation alone, contention off; **proved maximal at `N=8`** (the maximality probe returned UNSAT) |
 
 ```
 Query: exists workload with  T_HighMLP > T_LowMLP ?     # SPEC=1, NB=2
@@ -277,12 +277,42 @@ falsifiers are genuinely independent, `-DCFG_CONTENTION=0` forces `Pen ≡ 0`,
 removing all bank/row contention so speculation is the only anti-MLP mechanism
 left. The guard `SPEC=0, CONTENTION=0` is **UNSAT** (no penalty, no speculation ⇒
 the channel is monotone in `W`). Turning speculation back on, `SPEC=1,
-CONTENTION=0` is **SAT, Δ≥5** — and in the witness the `nfly`/`pen` rows are
-identically zero for both machines, so the deviation is purely speculative: the
-wide window (W=6) issues one wrong-path request to the bus before resolve while the
-MSHR-gated narrow window (W=2) issues none, delaying the wide machine's correct-path
-tail (`T = 65` vs `60`). Speculation does **not** need bank contention to break the
-dogma.
+CONTENTION=0` is **SAT** — and at `N=8` the maximality probe **terminates**,
+proving `Δ=5` is the exact maximum (not just a lower bound) at that depth:
+
+```
+Query: exists workload with  T_HighMLP > T_LowMLP ?     # SPEC=1, CONTENTION=0, N=8
+
+SAT at delta = 1 cycles; maximizing...
+  found larger delta = 5 cycles
+  proved maximum: delta = 5 cycles.
+
+Conclusion: T_HighMLP = 68  >  T_LowMLP = 63   (delta = 5 cycles)
+```
+
+In the witness the `nfly`/`pen` rows are identically zero for both machines, so
+contention is genuinely off and the deviation is **purely speculative**. Z3
+mispredicts a branch at `BR=4` with a 2-request shadow `Sq = {5,6}`, resolving at
+`R = E[4] = 53` (shared — both machines mispredict identically). All the action is
+on wrong-path **read** request 6:
+
+- **LowMLP (W=2)** is MSHR-gated: request 6 cannot present until a slot frees at
+  `A'[6]=53`, which is **not** before resolve (`St[6]=53 ≮ 53`), so it is killed in
+  the issue queue (`Live=0`). **Issue depth 0** — it never touches the bus.
+- **HighMLP (W=6)** has slots to spare: request 6 presents at `A'[6]=52` and reaches
+  the bus at `St[6]=52`, squeaking in **one cycle before resolve** (`52 < 53`, so
+  `Live=1`). **Issue depth 1.** That doomed read occupies a bus slot and, being a
+  read immediately before correct-path write request 7, forces a `TT=4`
+  read→write turnaround bubble: `St[7] = 52+G+TT = 58`, vs the narrow window's
+  `St[7] = 53` with no bubble.
+
+The single wasted admission delays the wide machine's **correct-path** tail to
+`T = 68` versus the narrow window's `T = 63`; `Δ = 5` emerges purely from `W`. The
+`St`/`A'`/`Live` rows were recomputed by hand and match the dumped timeline exactly.
+This separates the two falsifiers cleanly: speculation does **not** need bank
+contention to break the dogma. (The earlier `N=12` run reported the same value as a
+timeout *lower bound* `Δ≥5`; the `N=8` run upgrades it to a *proved maximum* at that
+depth — max-Δ is non-decreasing in `N`, so `N=12` could in principle climb higher.)
 
 ## Configuration
 
