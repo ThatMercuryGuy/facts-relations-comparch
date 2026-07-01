@@ -403,6 +403,18 @@ alone breaks the dogma without needing bank contention.
   and `RESOLVE_DELAY` variants; report whether Δ-max is proved or a timeout lower
   bound. The solver tuning should help these complete faster.
 
+## Code style
+
+- **Braces:** GNU Allman style — opening brace on the next line for all blocks,
+  indented by two spaces. Single-statement if/else blocks may omit braces for
+  readability (e.g., `if (cond) statement;`).
+- **Indentation:** Two spaces consistently (matching the existing `namespace cfg`
+  block and throughout the file).
+- **Line wrapping:** Keep lines reasonably compact; prefer semantic grouping over
+  arbitrary 80-column boundaries.
+- **Comments:** Minimal — only where the intent is non-obvious or a constraint is
+  hidden. Do not repeat what the code already says; focus on the *why*.
+
 ## Completed (no longer deferred)
 
 - **Strategy A1: explicit DRAM banks** — the scalar locality-blind `inflight` is now
